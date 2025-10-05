@@ -106,7 +106,7 @@ export default function HomeOverview({ location = "pv1" }) {
     return arr.slice(0, TOP_PRODUCTS_LIMIT);
   }, [ventasDeSede]);
 
-  // ===== Handlers de detalle (abre modal con contenido) =====
+  // ===== Handlers detalle =====
   function showVentasHoy() {
     const start = startOfDay(Date.now());
     const list = ventasDeSede.filter((v) => getMs(v.createdAt, v._id) >= start);
@@ -190,9 +190,9 @@ export default function HomeOverview({ location = "pv1" }) {
 
   // ===== UI =====
   return (
-    <div className="space-y-6 overflow-x-hidden max-w-full">
+    <section className="space-y-6 overflow-x-clip max-w-screen w-full">
       {/* KPIs */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <KpiCard
           title="Ventas HOY"
           value={money(kpis.hoyMonto)}
@@ -220,10 +220,10 @@ export default function HomeOverview({ location = "pv1" }) {
         />
       </div>
 
-      {/* Si es taller, muestra resumen de órdenes */}
+      {/* Taller: órdenes */}
       {location === "taller" && (
         <div className="rounded-2xl border border-white/10 bg-[#112C3E]/80 p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-start md:items-center justify-between gap-3 mb-3 flex-wrap">
             <h3 className="font-semibold">Órdenes activas</h3>
             <div className="flex items-center gap-2 flex-wrap">
               <button
@@ -234,7 +234,7 @@ export default function HomeOverview({ location = "pv1" }) {
               >
                 Ver detalle
               </button>
-              <span className="text-xs text-white/60">
+              <span className="text-xs text-white/60 shrink-0">
                 {loadingOrdenes ? "Cargando…" : `${ordenes.length} órdenes`}
               </span>
             </div>
@@ -242,14 +242,14 @@ export default function HomeOverview({ location = "pv1" }) {
 
           {/* Tabla md+ / cards mobile */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-            <table className="w-full text-sm">
+            <table className="w-full table-fixed text-sm">
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
                 <tr>
-                  <Th>#</Th>
+                  <Th className="w-24">#</Th>
                   <Th>Vehículo</Th>
                   <Th>Cliente</Th>
-                  <Th>Estado</Th>
-                  <Th className="text-right">Estimado</Th>
+                  <Th className="w-28">Estado</Th>
+                  <Th className="w-32 text-right">Estimado</Th>
                 </tr>
               </thead>
               <tbody>
@@ -259,7 +259,9 @@ export default function HomeOverview({ location = "pv1" }) {
                     className="border-t border-white/5 hover:bg-white/5 cursor-pointer"
                     onClick={() => showOrden(o)}
                   >
-                    <Td>{o.code || o.id.slice(-6)}</Td>
+                    <Td className="whitespace-nowrap">
+                      {o.code || o.id.slice(-6)}
+                    </Td>
                     <Td className="break-words">
                       {o.vehicle?.plate || o.vehicle?.model || "—"}
                     </Td>
@@ -280,7 +282,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
-          <div className="md:hidden space-y-2 w-full overflow-hidden">
+          <div className="md:hidden space-y-2 w-full">
             {ordenes.slice(0, 8).map((o) => (
               <button
                 key={o.id}
@@ -295,7 +297,7 @@ export default function HomeOverview({ location = "pv1" }) {
                         {o.vehicle?.plate || o.vehicle?.model || "—"}
                       </span>
                     </div>
-                    <div className="text-xs text-white/60 mt-0.5 truncate">
+                    <div className="text-xs text-white/60 mt-0.5">
                       {o.customer?.name || o.customerEmail || "—"}
                     </div>
                   </div>
@@ -319,11 +321,11 @@ export default function HomeOverview({ location = "pv1" }) {
         </div>
       )}
 
-      {/* Dos columnas: últimas ventas + top productos */}
-      <div className="grid gap-4 md:grid-cols-2">
+      {/* Últimas ventas + Top productos */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Últimas ventas */}
         <div className="rounded-2xl border border-white/10 bg-[#112C3E]/80 p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-start md:items-center justify-between gap-3 mb-3 flex-wrap">
             <h3 className="font-semibold">Últimas ventas</h3>
             <div className="flex items-center gap-2 flex-wrap">
               <button
@@ -337,7 +339,7 @@ export default function HomeOverview({ location = "pv1" }) {
               >
                 Ver detalle
               </button>
-              <span className="text-xs text-white/60">
+              <span className="text-xs text-white/60 shrink-0">
                 {loadingVentas ? "Cargando…" : `${recientes.length} mostradas`}
               </span>
             </div>
@@ -345,12 +347,12 @@ export default function HomeOverview({ location = "pv1" }) {
 
           {/* Tabla md+ / cards mobile */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-            <table className="w-full text-sm">
+            <table className="w-full table-fixed text-sm">
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
                 <tr>
-                  <Th>Fecha</Th>
-                  <Th className="text-right">Ítems</Th>
-                  <Th className="text-right">Total</Th>
+                  <Th className="w-40">Fecha</Th>
+                  <Th className="w-24 text-right">Ítems</Th>
+                  <Th className="w-40 text-right">Total</Th>
                   <Th>Por</Th>
                 </tr>
               </thead>
@@ -366,14 +368,14 @@ export default function HomeOverview({ location = "pv1" }) {
                       className="border-t border-white/5 hover:bg-white/5 cursor-pointer"
                       onClick={() => showVenta(v)}
                     >
-                      <Td>{fmtDate(getMs(v.createdAt, v._id))}</Td>
+                      <Td className="whitespace-nowrap">
+                        {fmtDate(getMs(v.createdAt, v._id))}
+                      </Td>
                       <Td className="text-right">{items}</Td>
                       <Td className="text-right">
                         {money(v?.totals?.total ?? v?.total)}
                       </Td>
-                      <Td className="truncate max-w-[200px] break-words">
-                        {v.createdByEmail || "—"}
-                      </Td>
+                      <Td className="break-words">{v.createdByEmail || "—"}</Td>
                     </tr>
                   );
                 })}
@@ -381,7 +383,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
-          <div className="md:hidden space-y-2 w-full overflow-hidden">
+          <div className="md:hidden space-y-2 w-full">
             {recientes.length === 0 ? (
               <div className="rounded-xl border border-white/10 p-3 text-white/60">
                 Sin ventas recientes.
@@ -405,7 +407,7 @@ export default function HomeOverview({ location = "pv1" }) {
                           {money(tot)} •{" "}
                           <span className="font-normal">{items} ítems</span>
                         </div>
-                        <div className="text-xs text-white/60 mt-0.5 truncate">
+                        <div className="text-xs text-white/60 mt-0.5">
                           {fmtDate(getMs(v.createdAt, v._id))} •{" "}
                           {v.createdByEmail || "—"}
                         </div>
@@ -423,7 +425,7 @@ export default function HomeOverview({ location = "pv1" }) {
 
         {/* Top productos + low stock */}
         <div className="rounded-2xl border border-white/10 bg-[#112C3E]/80 p-4">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-start md:items-center justify-between gap-3 mb-3 flex-wrap">
             <h3 className="font-semibold">
               {location === "taller"
                 ? "Top repuestos (venta)"
@@ -436,7 +438,7 @@ export default function HomeOverview({ location = "pv1" }) {
               >
                 Ver detalle
               </button>
-              <span className="text-xs text-white/60">
+              <span className="text-xs text-white/60 shrink-0">
                 {topProductos.length} ítems
               </span>
             </div>
@@ -444,12 +446,12 @@ export default function HomeOverview({ location = "pv1" }) {
 
           {/* Tabla md+ / cards mobile */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-            <table className="w-full text-sm">
+            <table className="w-full table-fixed text-sm">
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
                 <tr>
                   <Th>Producto</Th>
-                  <Th className="text-right">Unidades</Th>
-                  <Th className="text-right">Ingresos</Th>
+                  <Th className="w-28 text-right">Unidades</Th>
+                  <Th className="w-40 text-right">Ingresos</Th>
                 </tr>
               </thead>
               <tbody>
@@ -459,9 +461,7 @@ export default function HomeOverview({ location = "pv1" }) {
                     className="border-t border-white/5 hover:bg-white/5 cursor-pointer"
                     onClick={() => showTopProductoDetalle(p)}
                   >
-                    <Td className="truncate max-w-[240px] break-words">
-                      {p.name}
-                    </Td>
+                    <Td className="truncate break-words">{p.name}</Td>
                     <Td className="text-right">{p.qty}</Td>
                     <Td className="text-right">{money(p.revenue)}</Td>
                   </tr>
@@ -470,7 +470,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
-          <div className="md:hidden space-y-2 w-full overflow-hidden">
+          <div className="md:hidden space-y-2 w-full">
             {topProductos.length === 0 ? (
               <div className="rounded-xl border border-white/10 p-3 text-white/60">
                 Sin datos suficientes.
@@ -502,7 +502,7 @@ export default function HomeOverview({ location = "pv1" }) {
 
           {/* Low stock compacto */}
           <div className="mt-4 border-t border-white/10 pt-3">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
               <h4 className="text-sm font-semibold">
                 Stock bajo (≤ {LOW_STOCK_THRESHOLD}) — {location.toUpperCase()}
               </h4>
@@ -514,7 +514,6 @@ export default function HomeOverview({ location = "pv1" }) {
               </button>
             </div>
 
-            {/* Lista compacta (ambos tamaños) */}
             <ul className="space-y-1 max-h-40 overflow-auto pr-1">
               {productos
                 .filter(
@@ -564,7 +563,12 @@ export default function HomeOverview({ location = "pv1" }) {
       )}
 
       <style jsx global>{`
-        /* Evita overflow horizontal por textos largos */
+        /* Previene overflow horizontal general y fuerza corte de palabras largas */
+        html,
+        body {
+          max-width: 100vw;
+          overflow-x: hidden;
+        }
         th,
         td,
         .break-words {
@@ -572,7 +576,7 @@ export default function HomeOverview({ location = "pv1" }) {
           overflow-wrap: anywhere;
         }
       `}</style>
-    </div>
+    </section>
   );
 }
 
@@ -602,10 +606,9 @@ function KpiCard({ title, value, hint, tone, onClick }) {
 function Modal({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 z-[100] bg-black/60">
-      {/* Cerrar al click fuera */}
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
       <div
-        className="relative z-[101] mx-auto my-6 w-full max-w-4xl px-4"
+        className="relative z-[101] mx-auto my-6 w-full max-w-4xl px-3 sm:px-4"
         role="dialog"
         aria-modal="true"
       >
@@ -629,7 +632,7 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-/* ===== Listas con versión responsive (tabla md+ / cards mobile) ===== */
+/* ===== Listas (tabla md+ / cards mobile) ===== */
 function VentasList({ ventas }) {
   if (!ventas?.length)
     return <p className="text-sm text-white/60">Sin ventas.</p>;
@@ -638,13 +641,13 @@ function VentasList({ ventas }) {
     <>
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
             <tr>
-              <Th>Fecha</Th>
+              <Th className="w-40">Fecha</Th>
               <Th>Ticket</Th>
-              <Th className="text-right">Ítems</Th>
-              <Th className="text-right">Total</Th>
+              <Th className="w-24 text-right">Ítems</Th>
+              <Th className="w-40 text-right">Total</Th>
               <Th>Usuario</Th>
             </tr>
           </thead>
@@ -659,7 +662,9 @@ function VentasList({ ventas }) {
                   key={`${v.chunkDoc}_${v._id}`}
                   className="border-t border-white/5"
                 >
-                  <Td>{fmtDate(getMs(v.createdAt, v._id))}</Td>
+                  <Td className="whitespace-nowrap">
+                    {fmtDate(getMs(v.createdAt, v._id))}
+                  </Td>
                   <Td className="truncate">{v._id}</Td>
                   <Td className="text-right">{items}</Td>
                   <Td className="text-right">
@@ -674,7 +679,7 @@ function VentasList({ ventas }) {
       </div>
 
       {/* Cards mobile */}
-      <div className="md:hidden space-y-2 w-full overflow-hidden">
+      <div className="md:hidden space-y-2 w-full">
         {ventas.map((v) => {
           const items = (v?.lines || []).reduce(
             (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
@@ -692,7 +697,7 @@ function VentasList({ ventas }) {
                     {money(total)} •{" "}
                     <span className="font-normal">{items} ítems</span>
                   </div>
-                  <div className="text-xs text-white/60 mt-0.5 truncate">
+                  <div className="text-xs text-white/60 mt-0.5">
                     {fmtDate(getMs(v.createdAt, v._id))} • Ticket {v._id}
                   </div>
                 </div>
@@ -716,21 +721,23 @@ function OrdenesList({ rows }) {
     <>
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
             <tr>
-              <Th>#</Th>
+              <Th className="w-24">#</Th>
               <Th>Vehículo</Th>
               <Th>Cliente</Th>
-              <Th>Estado</Th>
-              <Th>Creada</Th>
-              <Th className="text-right">Estimado</Th>
+              <Th className="w-28">Estado</Th>
+              <Th className="w-40">Creada</Th>
+              <Th className="w-32 text-right">Estimado</Th>
             </tr>
           </thead>
           <tbody>
             {rows.map((o) => (
               <tr key={o.id} className="border-t border-white/5">
-                <Td>{o.code || o.id.slice(-6)}</Td>
+                <Td className="whitespace-nowrap">
+                  {o.code || o.id.slice(-6)}
+                </Td>
                 <Td className="break-words">
                   {o.vehicle?.plate || o.vehicle?.model || "—"}
                 </Td>
@@ -738,7 +745,9 @@ function OrdenesList({ rows }) {
                   {o.customer?.name || o.customerEmail || "—"}
                 </Td>
                 <Td>{o.status || "open"}</Td>
-                <Td>{fmtDate(getMs(o.createdAt, o.id))}</Td>
+                <Td className="whitespace-nowrap">
+                  {fmtDate(getMs(o.createdAt, o.id))}
+                </Td>
                 <Td className="text-right">{money(o.estimatedTotal || 0)}</Td>
               </tr>
             ))}
@@ -747,7 +756,7 @@ function OrdenesList({ rows }) {
       </div>
 
       {/* Cards mobile */}
-      <div className="md:hidden space-y-2 w-full overflow-hidden">
+      <div className="md:hidden space-y-2 w-full">
         {rows.map((o) => (
           <div
             key={o.id}
@@ -761,7 +770,7 @@ function OrdenesList({ rows }) {
                     {o.vehicle?.plate || o.vehicle?.model || "—"}
                   </span>
                 </div>
-                <div className="text-xs text-white/60 mt-0.5 truncate">
+                <div className="text-xs text-white/60 mt-0.5">
                   {o.customer?.name || o.customerEmail || "—"} •{" "}
                   {fmtDate(getMs(o.createdAt, o.id))}
                 </div>
@@ -787,12 +796,12 @@ function TopProductosList({ rows }) {
     <>
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
             <tr>
               <Th>Producto</Th>
-              <Th className="text-right">Unidades</Th>
-              <Th className="text-right">Ingresos</Th>
+              <Th className="w-28 text-right">Unidades</Th>
+              <Th className="w-40 text-right">Ingresos</Th>
             </tr>
           </thead>
           <tbody>
@@ -808,7 +817,7 @@ function TopProductosList({ rows }) {
       </div>
 
       {/* Cards mobile */}
-      <div className="md:hidden space-y-2 w-full overflow-hidden">
+      <div className="md:hidden space-y-2 w-full">
         {rows.map((p, i) => (
           <div
             key={i}
@@ -852,20 +861,22 @@ function TopProductoDetalle({ name, lines }) {
       {/* Tabla md+ */}
       <div className="hidden md:block border-t border-white/10 pt-3">
         <h4 className="font-semibold mb-2">Ventas relacionadas</h4>
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead className="bg-white/5 text-white/70">
             <tr>
-              <Th>Fecha</Th>
+              <Th className="w-40">Fecha</Th>
               <Th>Ticket</Th>
-              <Th className="text-right">Cant.</Th>
-              <Th className="text-right">Unit.</Th>
-              <Th className="text-right">Subtotal</Th>
+              <Th className="w-20 text-right">Cant.</Th>
+              <Th className="w-32 text-right">Unit.</Th>
+              <Th className="w-36 text-right">Subtotal</Th>
             </tr>
           </thead>
           <tbody>
             {lines.map(({ venta, line }, i) => (
               <tr key={i} className="border-t border-white/5">
-                <Td>{fmtDate(getMs(venta.createdAt, venta._id))}</Td>
+                <Td className="whitespace-nowrap">
+                  {fmtDate(getMs(venta.createdAt, venta._id))}
+                </Td>
                 <Td className="truncate">{venta._id}</Td>
                 <Td className="text-right">{line.qty}</Td>
                 <Td className="text-right">{money(line.unitPrice)}</Td>
@@ -877,7 +888,7 @@ function TopProductoDetalle({ name, lines }) {
       </div>
 
       {/* Cards mobile */}
-      <div className="md:hidden border-t border-white/10 pt-3 space-y-2 w-full overflow-hidden">
+      <div className="md:hidden border-top pt-3 space-y-2 w-full">
         <h4 className="font-semibold">Ventas relacionadas</h4>
         {lines.map(({ venta, line }, i) => (
           <div
@@ -889,7 +900,7 @@ function TopProductoDetalle({ name, lines }) {
                 <div className="text-sm font-semibold">
                   {fmtDate(getMs(venta.createdAt, venta._id))}
                 </div>
-                <div className="text-xs text-white/60 mt-0.5 truncate">
+                <div className="text-xs text-white/60 mt-0.5">
                   Ticket {venta._id}
                 </div>
               </div>
@@ -917,14 +928,14 @@ function ProductosList({ rows, stockField }) {
     <>
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
             <tr>
               <Th>SKU</Th>
               <Th>Nombre</Th>
               <Th>Tipo</Th>
               <Th>Proveedor</Th>
-              <Th className="text-right">Stock</Th>
+              <Th className="w-28 text-right">Stock</Th>
             </tr>
           </thead>
           <tbody>
@@ -947,7 +958,7 @@ function ProductosList({ rows, stockField }) {
       </div>
 
       {/* Cards mobile */}
-      <div className="md:hidden space-y-2 w-full overflow-hidden">
+      <div className="md:hidden space-y-2 w-full">
         {rows.map((p) => (
           <div
             key={`${p.chunkDoc}_${p.id}`}
@@ -958,7 +969,7 @@ function ProductosList({ rows, stockField }) {
                 <div className="text-sm font-semibold truncate">
                   {p.name || "—"}
                 </div>
-                <div className="text-xs text-white/60 mt-0.5 truncate">
+                <div className="text-xs text-white/60 mt-0.5">
                   SKU {p.sku || "—"} • {p.category || "—"} • {p.provider || "—"}
                 </div>
               </div>
@@ -999,14 +1010,14 @@ function VentaDetalle({ venta }) {
       {/* Tabla md+ */}
       <div className="hidden md:block border-t border-white/10 pt-3">
         <h4 className="font-semibold mb-2">Líneas</h4>
-        <table className="w-full text-sm">
+        <table className="w-full table-fixed text-sm">
           <thead className="bg-white/5 text-white/70">
             <tr>
               <Th>SKU</Th>
               <Th>Producto</Th>
-              <Th className="text-right">Cant.</Th>
-              <Th className="text-right">P. Unit.</Th>
-              <Th className="text-right">Subtotal</Th>
+              <Th className="w-20 text-right">Cant.</Th>
+              <Th className="w-28 text-right">P. Unit.</Th>
+              <Th className="w-32 text-right">Subtotal</Th>
             </tr>
           </thead>
           <tbody>
@@ -1044,7 +1055,7 @@ function VentaDetalle({ venta }) {
       </div>
 
       {/* Cards mobile */}
-      <div className="md:hidden border-t border-white/10 pt-3 space-y-2 w-full overflow-hidden">
+      <div className="md:hidden border-t border-white/10 pt-3 space-y-2 w-full">
         <h4 className="font-semibold">Líneas</h4>
         {(venta?.lines || []).length === 0 ? (
           <div className="rounded-xl border border-white/10 p-3 text-white/60">
@@ -1065,7 +1076,7 @@ function VentaDetalle({ venta }) {
                     <div className="text-sm font-semibold truncate">
                       {l?.name || "-"}
                     </div>
-                    <div className="text-xs text-white/60 mt-0.5 truncate">
+                    <div className="text-xs text-white/60 mt-0.5">
                       SKU {l?.sku || "-"} • {l?.category || "—"}
                     </div>
                   </div>
