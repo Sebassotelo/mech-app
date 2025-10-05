@@ -1,4 +1,5 @@
 // /pages/dashboard/index.js
+"use client";
 import Inventario from "@/componentes/panel/Inventario";
 import Ventas from "@/componentes/panel/Ventas";
 import HistorialVentas from "@/componentes/panel/HistorialVentas";
@@ -7,18 +8,36 @@ import ContextGeneral from "@/servicios/contextGeneral";
 import { toast } from "sonner";
 import HomeOverview from "@/componentes/panel/HomeOverview";
 import Stock from "@/componentes/panel/Stock";
+import { onAuthStateChanged } from "firebase/auth";
+import { useRouter } from "next/router";
 
 export default function Dashboard() {
   const ctx = useContext(ContextGeneral);
+  const router = useRouter();
+
+  // ───────── Auth Guard (declarado ANTES de cualquier return)
+  const [authReady, setAuthReady] = useState(false);
+
+  // ───────── Resto de hooks (también ANTES de cualquier return)
   const didFetch = useRef(false);
 
   const [location, setLocation] = useState("pv1"); // pv1 | pv2 | taller
   const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | reportes
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // ───────────────── Fetch inicial
+  // ───────── Auth effect
   useEffect(() => {
-    if (!ctx || didFetch.current) return;
+    if (!ctx?.auth) return;
+    const unsub = onAuthStateChanged(ctx.auth, (u) => {
+      setAuthReady(true);
+      if (!u) router.replace("/");
+    });
+    return () => unsub();
+  }, [ctx?.auth, router]);
+
+  // ───────── Fetch inicial
+  useEffect(() => {
+    if (!ctx || didFetch.current || !ctx?.user) return; // evita correr sin user
     didFetch.current = true;
 
     const needCats =
@@ -32,15 +51,12 @@ export default function Dashboard() {
     try {
       ctx.setLoader?.(true);
       const tasks = [];
-      if (needCats && typeof ctx.fetchCategorias === "function") {
+      if (needCats && typeof ctx.fetchCategorias === "function")
         tasks.push(ctx.fetchCategorias());
-      }
-      if (needProds && typeof ctx.fetchProductos === "function") {
+      if (needProds && typeof ctx.fetchProductos === "function")
         tasks.push(ctx.fetchProductos());
-      }
-      if (needVentas && typeof ctx.fetchVentas === "function") {
+      if (needVentas && typeof ctx.fetchVentas === "function")
         tasks.push(ctx.fetchVentas());
-      }
       Promise.all(tasks)
         .catch((e) => {
           console.error(e);
@@ -53,7 +69,7 @@ export default function Dashboard() {
     }
   }, [ctx]);
 
-  // ───────────────── Persistencia
+  // ───────── Persistencia UI
   useEffect(() => {
     try {
       const a = localStorage.getItem("mx.active");
@@ -73,7 +89,7 @@ export default function Dashboard() {
     } catch {}
   }, [location]);
 
-  // ───────────────── Nav dinámico
+  // ───────── Nav dinámico
   const navItems = useMemo(() => {
     if (location === "taller") {
       return [{ id: "home", label: "Inicio", icon: HomeIcon }];
@@ -102,7 +118,7 @@ export default function Dashboard() {
     return <HomeView location={location} />;
   }, [active, location]);
 
-  // ───────────────── Mobile: bloquear scroll + cerrar con ESC y click fuera
+  // ───────── Mobile: bloquear scroll + cerrar con ESC
   const drawerRef = useRef(null);
   useEffect(() => {
     if (mobileNavOpen) {
@@ -135,9 +151,25 @@ export default function Dashboard() {
 
   const handleNavClick = (id) => {
     setActive(id);
-    setMobileNavOpen(false); // cerrar el drawer al navegar
+    setMobileNavOpen(false);
   };
 
+  // ───────── Gates visuales (estos returns ahora son SEGUROS porque ya declaramos todos los hooks)
+  if (!authReady) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-[#0C212D] text-white">
+        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
+          <span className="h-2 w-2 rounded-full bg-[#EE7203] animate-pulse" />
+          <span className="text-sm text-white/80">Cargando panel…</span>
+        </div>
+      </div>
+    );
+  }
+
+  // si authReady pero aún no hay user (por transición), no renderizamos el panel
+  if (!ctx?.user) return null;
+
+  // ───────── UI principal
   return (
     <div className="min-h-screen flex bg-[#0C212D] text-white overflow-x-hidden">
       {/* ───────── Sidebar desktop ───────── */}
@@ -153,7 +185,6 @@ export default function Dashboard() {
       </aside>
 
       {/* ───────── Drawer mobile ───────── */}
-      {/* Overlay */}
       {mobileNavOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 md:hidden"
@@ -161,7 +192,6 @@ export default function Dashboard() {
           aria-hidden="true"
         />
       )}
-      {/* Panel */}
       <div
         ref={drawerRef}
         className={`fixed z-50 inset-y-0 left-0 w-72 bg-[#112C3E] border-r border-white/10 md:hidden transition-transform duration-200 ${
@@ -226,7 +256,6 @@ export default function Dashboard() {
                 {subtitleFor(active, location)}
               </p>
             </div>
-            {/* Badge sede compacto */}
             <span
               className={`inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-xl bg-white/5 ring-1 ring-white/10`}
             >
@@ -254,8 +283,9 @@ export default function Dashboard() {
             </div>
 
             <span
-              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg-white/5 ring-1 ring-white/10
-              ${location === "taller" ? "opacity-80" : ""}`}
+              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg-white/5 ring-1 ring-white/10 ${
+                location === "taller" ? "opacity-80" : ""
+              }`}
             >
               <Dot className={dotColor(location)} />
               <strong className="font-semibold">
@@ -273,9 +303,7 @@ export default function Dashboard() {
             </span>
           </div>
 
-          {/* (mobile) Sin tabs ni selector redundante: todo via menú hamburguesa */}
-
-          {/* Visualizador limitado + overflow local (X) */}
+          {/* Visualizador */}
           <div className="rounded-2xl bg-[#112C3E]/80 border border-white/10 shadow-xl min-w-0">
             <div className="min-w-0 w-full overflow-x-auto overscroll-x-contain">
               <div className="p-4 sm:p-6 min-w-0">
@@ -315,16 +343,14 @@ function NavList({ navItems, active, onClickItem }) {
           <li key={id}>
             <button
               onClick={() => onClickItem(id)}
-              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition relative
-              ${
+              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition relative ${
                 isActive
                   ? "bg-white/10 ring-1 ring-white/10"
                   : "hover:bg-white/5"
               }`}
             >
               <span
-                className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r
-                ${
+                className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r ${
                   isActive
                     ? "bg-gradient-to-b from-[#EE7203] to-[#FF3816]"
                     : "bg-transparent"
@@ -376,8 +402,7 @@ function LocationDropdown({ value, onChange }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-[#0C212D] border border-white/10
-          text-sm outline-none focus:ring-2 ${ring} transition`}
+        className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-[#0C212D] border border-white/10 text-sm outline-none focus:ring-2 ${ring} transition`}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -451,9 +476,9 @@ function LocationOption({ id, active, label, desc, onSelect, disabled, grad }) {
           e.preventDefault();
           if (!disabled) onSelect();
         }}
-        className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left
-          ${disabled ? "opacity-70 cursor-not-allowed" : "hover:bg-white/5"}
-          ${active ? "bg-white/5" : ""}`}
+        className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left ${
+          disabled ? "opacity-70 cursor-not-allowed" : "hover:bg-white/5"
+        } ${active ? "bg-white/5" : ""}`}
       >
         <span
           className={`h-8 w-8 rounded-lg ring-1 ring-white/10 bg-gradient-to-br ${grad} flex items-center justify-center`}
@@ -550,7 +575,7 @@ function TallerPlaceholder() {
   );
 }
 
-/* ───────── Iconos ───────── */
+/* ───────── Iconos & utils ───────── */
 function HomeIcon({ className = "" }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none">
