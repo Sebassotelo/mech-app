@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import Head from "next/head";
+import { Toaster } from "sonner";
 
 function Layout({ children, title }) {
   return (
@@ -26,6 +27,8 @@ function Layout({ children, title }) {
           rel="stylesheet"
         />
       </Head>
+
+      <Toaster />
 
       <div>{children}</div>
     </div>
