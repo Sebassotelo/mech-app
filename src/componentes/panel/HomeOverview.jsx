@@ -11,16 +11,16 @@ const TOP_PRODUCTS_LIMIT = 5; // top productos por cantidad
 export default function HomeOverview({ location = "pv1" }) {
   const ctx = useContext(ContextGeneral);
 
-  // Productos y ventas desde Context
+  // Data desde Context
   const productos = Array.isArray(ctx?.productos) ? ctx.productos : [];
   const ventas = Array.isArray(ctx?.ventas) ? ctx.ventas : [];
   const stockField = location === "pv2" ? "stockPv2" : "stockPv1";
 
-  // Órdenes (solo consumo desde Context)
+  // Taller
   const ordenes = Array.isArray(ctx?.ordenes) ? ctx.ordenes : [];
   const loadingOrdenes = !!ctx?.loadingOrdenes;
 
-  // Loaders (solo UI; el Home NO hace fetch)
+  // Loaders
   const loadingVentas = ctx?.loader === true && ventas.length === 0;
 
   // ====== Modal genérico ======
@@ -30,9 +30,14 @@ export default function HomeOverview({ location = "pv1" }) {
   const closeModal = () => setModal({ open: false, title: "", content: null });
 
   // ===== Derivados =====
-  const ventasDeSede = useMemo(
+  const ventasSedeAll = useMemo(
     () => (ventas || []).filter((v) => v?.location === location),
     [ventas, location]
+  );
+
+  const ventasSedeActivas = useMemo(
+    () => ventasSedeAll.filter((v) => !isCanceled(v)),
+    [ventasSedeAll]
   );
 
   const kpis = useMemo(() => {
@@ -46,7 +51,7 @@ export default function HomeOverview({ location = "pv1" }) {
       mesTickets = 0,
       itemsVendidosMes = 0;
 
-    ventasDeSede.forEach((v) => {
+    ventasSedeActivas.forEach((v) => {
       const ms = getMs(v?.createdAt, v?._id);
       const totalV = Number(v?.totals?.total ?? v?.total ?? 0);
       if (ms >= startOfToday) {
@@ -67,8 +72,6 @@ export default function HomeOverview({ location = "pv1" }) {
       (p) => Number.parseInt(p?.[stockField] ?? 0, 10) <= LOW_STOCK_THRESHOLD
     ).length;
 
-    const totalSkus = (productos || []).length;
-
     return {
       hoyMonto,
       hoyTickets,
@@ -76,18 +79,18 @@ export default function HomeOverview({ location = "pv1" }) {
       mesTickets,
       itemsVendidosMes,
       lowStock,
-      totalSkus,
+      totalSkus: (productos || []).length,
     };
-  }, [ventasDeSede, productos, stockField]);
+  }, [ventasSedeActivas, productos, stockField]);
 
   const recientes = useMemo(
-    () => ventasDeSede.slice(0, RECENT_SALES_LIMIT),
-    [ventasDeSede]
+    () => ventasSedeAll.slice(0, RECENT_SALES_LIMIT),
+    [ventasSedeAll]
   );
 
   const topProductos = useMemo(() => {
     const map = new Map();
-    ventasDeSede.forEach((v) => {
+    ventasSedeActivas.forEach((v) => {
       (v?.lines || []).forEach((l) => {
         const key = l?.productId || l?.sku || l?.name || "unknown";
         const prev = map.get(key) || {
@@ -101,21 +104,32 @@ export default function HomeOverview({ location = "pv1" }) {
         map.set(key, prev);
       });
     });
-    const arr = Array.from(map.values());
-    arr.sort((a, b) => b.qty - a.qty);
+    const arr = Array.from(map.values()).sort((a, b) => b.qty - a.qty);
     return arr.slice(0, TOP_PRODUCTS_LIMIT);
-  }, [ventasDeSede]);
+  }, [ventasSedeActivas]);
 
   // ===== Handlers detalle =====
   function showVentasHoy() {
     const start = startOfDay(Date.now());
-    const list = ventasDeSede.filter((v) => getMs(v.createdAt, v._id) >= start);
-    openModal("Ventas de HOY", <VentasList ventas={list} />);
+    openModal(
+      "Ventas de HOY",
+      <VentasList
+        ventas={ventasSedeActivas.filter(
+          (v) => getMs(v.createdAt, v._id) >= start
+        )}
+      />
+    );
   }
   function showVentasMes() {
     const start = startOfMonthMs(Date.now());
-    const list = ventasDeSede.filter((v) => getMs(v.createdAt, v._id) >= start);
-    openModal("Ventas del MES", <VentasList ventas={list} />);
+    openModal(
+      "Ventas del MES",
+      <VentasList
+        ventas={ventasSedeActivas.filter(
+          (v) => getMs(v.createdAt, v._id) >= start
+        )}
+      />
+    );
   }
   function showSkus() {
     const rows = [...(productos || [])].sort((a, b) =>
@@ -140,8 +154,9 @@ export default function HomeOverview({ location = "pv1" }) {
     );
   }
   function showVenta(v) {
+    const titleBase = `Venta ${v._id} — ${fmtDate(getMs(v.createdAt, v._id))}`;
     openModal(
-      `Venta ${v._id} — ${fmtDate(getMs(v.createdAt, v._id))}`,
+      isCanceled(v) ? `${titleBase} (ANULADA)` : titleBase,
       <VentaDetalle venta={v} />
     );
   }
@@ -150,7 +165,7 @@ export default function HomeOverview({ location = "pv1" }) {
   }
   function showTopProductosFull() {
     const map = new Map();
-    ventasDeSede.forEach((v) => {
+    ventasSedeActivas.forEach((v) => {
       (v?.lines || []).forEach((l) => {
         const key = l?.productId || l?.sku || l?.name || "unknown";
         const prev = map.get(key) || {
@@ -174,12 +189,11 @@ export default function HomeOverview({ location = "pv1" }) {
   }
   function showTopProductoDetalle(tp) {
     const lines = [];
-    ventasDeSede.forEach((v) => {
+    ventasSedeActivas.forEach((v) => {
       (v?.lines || []).forEach((l) => {
         const key = l?.productId || l?.sku || l?.name || "unknown";
-        if (key === tp.key || l?.name === tp.name || l?.sku === tp.name) {
+        if (key === tp.key || l?.name === tp.name || l?.sku === tp.name)
           lines.push({ venta: v, line: l });
-        }
       });
     });
     openModal(
@@ -240,7 +254,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </div>
           </div>
 
-          {/* Tabla md+ / cards mobile */}
+          {/* Tabla md+ */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
             <table className="w-full table-fixed text-sm">
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
@@ -282,6 +296,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
+          {/* Cards mobile */}
           <div className="md:hidden space-y-2 w-full">
             {ordenes.slice(0, 8).map((o) => (
               <button
@@ -333,7 +348,7 @@ export default function HomeOverview({ location = "pv1" }) {
                 onClick={() =>
                   openModal(
                     "Todas las ventas recientes",
-                    <VentasList ventas={ventasDeSede.slice(0, 100)} />
+                    <VentasList ventas={ventasSedeAll.slice(0, 100)} />
                   )
                 }
               >
@@ -345,15 +360,24 @@ export default function HomeOverview({ location = "pv1" }) {
             </div>
           </div>
 
-          {/* Tabla md+ / cards mobile */}
+          {/* Tabla md+ */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-            <table className="w-full table-fixed text-sm">
+            <table className="w-full text-sm table-fixed">
+              {/* Evita estiramientos y mantiene columnas legibles */}
+              <colgroup>
+                <col style={{ width: 160 }} /> {/* Fecha */}
+                <col style={{ width: 80 }} /> {/* Ítems */}
+                <col style={{ width: 120 }} /> {/* Total */}
+                <col /> {/* Por (rellena) */}
+                <col style={{ width: 100 }} /> {/* Estado */}
+              </colgroup>
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
                 <tr>
-                  <Th className="w-40">Fecha</Th>
-                  <Th className="w-24 text-right">Ítems</Th>
-                  <Th className="w-40 text-right">Total</Th>
-                  <Th>Por</Th>
+                  <Th className="whitespace-nowrap">Fecha</Th>
+                  <Th className="text-right whitespace-nowrap">Ítems</Th>
+                  <Th className="text-right whitespace-nowrap">Total</Th>
+                  <Th className="whitespace-nowrap">Por</Th>
+                  <Th className="whitespace-nowrap">Estado</Th>
                 </tr>
               </thead>
               <tbody>
@@ -362,6 +386,8 @@ export default function HomeOverview({ location = "pv1" }) {
                     (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
                     0
                   );
+                  const totalNum = Number(v?.totals?.total ?? v?.total ?? 0);
+                  const canceled = isCanceled(v);
                   return (
                     <tr
                       key={`${v.chunkDoc}_${v._id}`}
@@ -371,11 +397,31 @@ export default function HomeOverview({ location = "pv1" }) {
                       <Td className="whitespace-nowrap">
                         {fmtDate(getMs(v.createdAt, v._id))}
                       </Td>
-                      <Td className="text-right">{items}</Td>
-                      <Td className="text-right">
-                        {money(v?.totals?.total ?? v?.total)}
+                      <Td className="text-right whitespace-nowrap">{items}</Td>
+                      <Td className="text-right whitespace-nowrap">
+                        <span
+                          className={canceled ? "line-through opacity-60" : ""}
+                        >
+                          {money(totalNum)}
+                        </span>
                       </Td>
-                      <Td className="break-words">{v.createdByEmail || "—"}</Td>
+                      <Td
+                        className="truncate max-w-[220px]"
+                        title={v.createdByEmail || "—"}
+                      >
+                        {v.createdByEmail || "—"}
+                      </Td>
+                      <Td className="whitespace-nowrap">
+                        {canceled ? (
+                          <span className="px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816] text-[11px]">
+                            ANULADA
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-white/10 text-[11px]">
+                            OK
+                          </span>
+                        )}
+                      </Td>
                     </tr>
                   );
                 })}
@@ -383,6 +429,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
+          {/* Cards mobile */}
           <div className="md:hidden space-y-2 w-full">
             {recientes.length === 0 ? (
               <div className="rounded-xl border border-white/10 p-3 text-white/60">
@@ -395,6 +442,7 @@ export default function HomeOverview({ location = "pv1" }) {
                   0
                 );
                 const tot = Number(v?.totals?.total ?? v?.total ?? 0);
+                const canceled = isCanceled(v);
                 return (
                   <button
                     key={`${v.chunkDoc}_${v._id}`}
@@ -404,17 +452,32 @@ export default function HomeOverview({ location = "pv1" }) {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 break-words">
                         <div className="text-sm font-semibold">
-                          {money(tot)} •{" "}
-                          <span className="font-normal">{items} ítems</span>
+                          <span
+                            className={
+                              canceled ? "line-through opacity-60" : ""
+                            }
+                          >
+                            {money(tot)}
+                          </span>{" "}
+                          • <span className="font-normal">{items} ítems</span>
                         </div>
                         <div className="text-xs text-white/60 mt-0.5">
                           {fmtDate(getMs(v.createdAt, v._id))} •{" "}
-                          {v.createdByEmail || "—"}
+                          <span className="truncate max-w-[160px] inline-block align-bottom">
+                            {v.createdByEmail || "—"}
+                          </span>
                         </div>
                       </div>
-                      <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-white/10">
-                        {v.location?.toUpperCase?.() || "—"}
-                      </span>
+                      <div className="shrink-0 text-right">
+                        <span className="block text-[11px] px-2 py-0.5 rounded bg-white/10 mb-1">
+                          {v.location?.toUpperCase?.() || "—"}
+                        </span>
+                        {canceled && (
+                          <span className="block text-[11px] px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816]">
+                            ANULADA
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </button>
                 );
@@ -444,7 +507,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </div>
           </div>
 
-          {/* Tabla md+ / cards mobile */}
+          {/* Tabla md+ */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
             <table className="w-full table-fixed text-sm">
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
@@ -470,6 +533,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
+          {/* Cards mobile */}
           <div className="md:hidden space-y-2 w-full">
             {topProductos.length === 0 ? (
               <div className="rounded-xl border border-white/10 p-3 text-white/60">
@@ -563,7 +627,6 @@ export default function HomeOverview({ location = "pv1" }) {
       )}
 
       <style jsx global>{`
-        /* Previene overflow horizontal general y fuerza corte de palabras largas */
         html,
         body {
           max-width: 100vw;
@@ -636,19 +699,28 @@ function Modal({ title, onClose, children }) {
 function VentasList({ ventas }) {
   if (!ventas?.length)
     return <p className="text-sm text-white/60">Sin ventas.</p>;
-
   return (
     <>
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
-        <table className="w-full table-fixed text-sm">
+        <table className="w-full text-sm table-fixed">
+          <colgroup>
+            <col style={{ width: 160 }} />
+            <col style={{ width: 140 }} />
+            <col style={{ width: 80 }} />
+            <col style={{ width: 120 }} />
+            <col />
+            {/* Usuario */}
+            <col style={{ width: 100 }} />
+          </colgroup>
           <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
             <tr>
-              <Th className="w-40">Fecha</Th>
-              <Th>Ticket</Th>
-              <Th className="w-24 text-right">Ítems</Th>
-              <Th className="w-40 text-right">Total</Th>
-              <Th>Usuario</Th>
+              <Th className="whitespace-nowrap">Fecha</Th>
+              <Th className="whitespace-nowrap">Ticket</Th>
+              <Th className="text-right whitespace-nowrap">Ítems</Th>
+              <Th className="text-right whitespace-nowrap">Total</Th>
+              <Th className="whitespace-nowrap">Usuario</Th>
+              <Th className="whitespace-nowrap">Estado</Th>
             </tr>
           </thead>
           <tbody>
@@ -657,6 +729,7 @@ function VentasList({ ventas }) {
                 (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
                 0
               );
+              const canceled = isCanceled(v);
               return (
                 <tr
                   key={`${v.chunkDoc}_${v._id}`}
@@ -666,11 +739,29 @@ function VentasList({ ventas }) {
                     {fmtDate(getMs(v.createdAt, v._id))}
                   </Td>
                   <Td className="truncate">{v._id}</Td>
-                  <Td className="text-right">{items}</Td>
-                  <Td className="text-right">
-                    {money(v?.totals?.total ?? v?.total)}
+                  <Td className="text-right whitespace-nowrap">{items}</Td>
+                  <Td className="text-right whitespace-nowrap">
+                    <span className={canceled ? "line-through opacity-60" : ""}>
+                      {money(v?.totals?.total ?? v?.total)}
+                    </span>
                   </Td>
-                  <Td className="truncate">{v.createdByEmail || "—"}</Td>
+                  <Td
+                    className="truncate max-w-[220px]"
+                    title={v.createdByEmail || "—"}
+                  >
+                    {v.createdByEmail || "—"}
+                  </Td>
+                  <Td className="whitespace-nowrap">
+                    {canceled ? (
+                      <span className="px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816] text-[11px]">
+                        ANULADA
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded bg-white/10 text-[11px]">
+                        OK
+                      </span>
+                    )}
+                  </Td>
                 </tr>
               );
             })}
@@ -686,6 +777,7 @@ function VentasList({ ventas }) {
             0
           );
           const total = Number(v?.totals?.total ?? v?.total ?? 0);
+          const canceled = isCanceled(v);
           return (
             <div
               key={`${v.chunkDoc}_${v._id}`}
@@ -694,16 +786,25 @@ function VentasList({ ventas }) {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 break-words">
                   <div className="text-sm font-semibold">
-                    {money(total)} •{" "}
-                    <span className="font-normal">{items} ítems</span>
+                    <span className={canceled ? "line-through opacity-60" : ""}>
+                      {money(total)}
+                    </span>{" "}
+                    • <span className="font-normal">{items} ítems</span>
                   </div>
                   <div className="text-xs text-white/60 mt-0.5">
                     {fmtDate(getMs(v.createdAt, v._id))} • Ticket {v._id}
                   </div>
                 </div>
-                <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-white/10">
-                  {v.createdByEmail || "—"}
-                </span>
+                <div className="shrink-0 text-right text-xs">
+                  <div className="px-2 py-0.5 rounded bg-white/10 inline-block">
+                    {v.createdByEmail || "—"}
+                  </div>
+                  {canceled && (
+                    <div className="mt-1 px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816] inline-block">
+                      ANULADA
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -716,7 +817,6 @@ function VentasList({ ventas }) {
 function OrdenesList({ rows }) {
   if (!rows?.length)
     return <p className="text-sm text-white/60">Sin órdenes.</p>;
-
   return (
     <>
       {/* Tabla md+ */}
@@ -791,7 +891,6 @@ function OrdenesList({ rows }) {
 
 function TopProductosList({ rows }) {
   if (!rows?.length) return <p className="text-sm text-white/60">Sin datos.</p>;
-
   return (
     <>
       {/* Tabla md+ */}
@@ -867,7 +966,7 @@ function TopProductoDetalle({ name, lines }) {
               <Th className="w-40">Fecha</Th>
               <Th>Ticket</Th>
               <Th className="w-20 text-right">Cant.</Th>
-              <Th className="w-32 text-right">Unit.</Th>
+              <Th className="w-28 text-right">Unit.</Th>
               <Th className="w-36 text-right">Subtotal</Th>
             </tr>
           </thead>
@@ -923,7 +1022,6 @@ function TopProductoDetalle({ name, lines }) {
 function ProductosList({ rows, stockField }) {
   if (!rows?.length)
     return <p className="text-sm text-white/60">Sin productos.</p>;
-
   return (
     <>
       {/* Tabla md+ */}
@@ -994,17 +1092,41 @@ function VentaDetalle({ venta }) {
     venta?.totals?.total ?? venta?.total ?? subtotal + surcharge
   );
   const createdMs = getMs(venta?.createdAt, venta?._id);
+  const canceled = isCanceled(venta);
+  const estado = (
+    venta?.status ||
+    venta?.estado ||
+    (canceled ? "ANULADA" : "OK")
+  ).toString();
 
   return (
     <div className="space-y-4 text-sm">
+      {canceled && (
+        <div className="rounded-lg bg-[#FF3816]/10 text-[#FFB0A1] border border-[#FF3816]/30 p-2">
+          Esta venta está{" "}
+          <span className="font-semibold text-[#FF8878]">ANULADA</span>. No se
+          computa en KPIs ni Top productos.
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <Info label="Ticket" value={venta?._id || "—"} />
         <Info label="Fecha" value={fmtDate(createdMs)} />
         <Info label="Sede" value={venta?.location?.toUpperCase?.() || "—"} />
         <Info label="Usuario" value={venta?.createdByEmail || "—"} />
+        <Info label="Estado" value={estado} />
         <Info label="Subtotal" value={money(subtotal)} />
         <Info label="Recargo" value={money(surcharge)} />
-        <Info label="Total" value={money(total)} />
+        <Info
+          label="Total"
+          value={
+            canceled ? (
+              <span className="line-through opacity-60">{money(total)}</span>
+            ) : (
+              money(total)
+            )
+          }
+        />
       </div>
 
       {/* Tabla md+ */}
@@ -1146,4 +1268,14 @@ function startOfMonthMs(ms) {
 }
 function finalPriceContado(p) {
   return p.discountActive && p.priceDiscount > 0 ? p.priceDiscount : p.price;
+}
+function isCanceled(v) {
+  const s = String(v?.status || v?.estado || "").toLowerCase();
+  return (
+    s.includes("anul") ||
+    s.includes("void") ||
+    v?.canceled === true ||
+    v?.anulada === true ||
+    v?.void === true
+  );
 }

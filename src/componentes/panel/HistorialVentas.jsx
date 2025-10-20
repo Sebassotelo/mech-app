@@ -20,10 +20,14 @@ export default function HistorialVentas({ location = "pv1" }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null); // venta seleccionada (drawer)
 
+  const ventasDeSede = useMemo(
+    () => ventas.filter((v) => v?.location === location),
+    [ventas, location]
+  );
+
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
-    return ventas
-      .filter((v) => v?.location === location)
+    return ventasDeSede
       .filter((v) => {
         if (!t) return true;
         const totalTxt = String(v?.totals?.total ?? v?.total ?? "");
@@ -39,7 +43,26 @@ export default function HistorialVentas({ location = "pv1" }) {
         );
       })
       .slice(0, 200);
-  }, [ventas, location, q]);
+  }, [ventasDeSede, q]);
+
+  // ===== Resumen para mostrar bien "ventas totales" (solo activas) =====
+  const resumen = useMemo(() => {
+    let monto = 0;
+    let tickets = 0;
+    let anuladas = 0;
+
+    ventasDeSede.forEach((v) => {
+      const total = Number(v?.totals?.total ?? v?.total ?? 0);
+      if (isCanceled(v)) {
+        anuladas += 1;
+      } else {
+        monto += total;
+        tickets += 1;
+      }
+    });
+
+    return { monto, tickets, anuladas };
+  }, [ventasDeSede]);
 
   return (
     <div className="min-w-0">
@@ -67,20 +90,44 @@ export default function HistorialVentas({ location = "pv1" }) {
         </div>
       </div>
 
+      {/* Resumen (solo activas computan) */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+        <span className="px-2 py-1 rounded-lg bg-white/5 border border-white/10">
+          Total activas: <strong>{money(resumen.monto)}</strong>
+        </span>
+        <span className="px-2 py-1 rounded-lg bg-white/5 border border-white/10">
+          Tickets activos: <strong>{resumen.tickets}</strong>
+        </span>
+        <span className="px-2 py-1 rounded-lg bg-[#FF3816]/10 border border-[#FF3816]/30 text-[#FFB0A1]">
+          Anuladas: <strong>{resumen.anuladas}</strong>
+        </span>
+      </div>
+
       {/* Tabla (solo md+) */}
       <div className="hidden md:block overflow-hidden rounded-2xl border border-white/10">
         <div className="max-h-[70vh] overflow-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm table-fixed">
+            {/* Fijamos anchos para evitar columnas apretadas */}
+            <colgroup>
+              <col style={{ width: 160 }} /> {/* Fecha */}
+              <col style={{ width: 80 }} /> {/* Sede */}
+              <col style={{ width: 80 }} /> {/* Ítems */}
+              <col style={{ width: 120 }} /> {/* Subtotal */}
+              <col style={{ width: 120 }} /> {/* Recargo */}
+              <col style={{ width: 130 }} /> {/* Total */}
+              <col style={{ width: 150 }} /> {/* Pago */}
+              <col /> {/* Creada por (resto) */}
+            </colgroup>
             <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
               <tr>
-                <Th>Fecha</Th>
-                <Th>Sede</Th>
-                <Th className="text-right">Ítems</Th>
-                <Th className="text-right">Subtotal</Th>
-                <Th className="text-right">Recargo</Th>
-                <Th className="text-right">Total</Th>
-                <Th>Pago</Th>
-                <Th>Creada por</Th>
+                <Th className="whitespace-nowrap">Fecha</Th>
+                <Th className="whitespace-nowrap">Sede</Th>
+                <Th className="text-right whitespace-nowrap">Ítems</Th>
+                <Th className="text-right whitespace-nowrap">Subtotal</Th>
+                <Th className="text-right whitespace-nowrap">Recargo</Th>
+                <Th className="text-right whitespace-nowrap">Total</Th>
+                <Th className="whitespace-nowrap">Pago</Th>
+                <Th className="whitespace-nowrap">Creada por</Th>
               </tr>
             </thead>
             <tbody>
@@ -114,6 +161,7 @@ export default function HistorialVentas({ location = "pv1" }) {
                   const method = v?.payment?.method || "—";
                   const createdMs =
                     tsToMs(v.createdAt) ?? idToMs(v._id) ?? idToMs(v.id) ?? 0;
+                  const canceled = isCanceled(v);
 
                   return (
                     <tr
@@ -122,16 +170,38 @@ export default function HistorialVentas({ location = "pv1" }) {
                       onClick={() => setSel(v)}
                       title="Ver detalle"
                     >
-                      <Td>{fmtDate(createdMs)}</Td>
-                      <Td className="uppercase">{v.location}</Td>
-                      <Td className="text-right">{items}</Td>
-                      <Td className="text-right">{money(subtotal)}</Td>
-                      <Td className="text-right">{money(surcharge)}</Td>
-                      <Td className="text-right">{money(total)}</Td>
-                      <Td>
-                        <Badge>{labelMethod(method)}</Badge>
+                      <Td className="whitespace-nowrap">
+                        {fmtDate(createdMs)}
                       </Td>
-                      <Td className="truncate max-w-[220px]">
+                      <Td className="uppercase whitespace-nowrap">
+                        {v.location}
+                      </Td>
+                      <Td className="text-right whitespace-nowrap">{items}</Td>
+                      <Td className="text-right whitespace-nowrap">
+                        {money(subtotal)}
+                      </Td>
+                      <Td className="text-right whitespace-nowrap">
+                        {money(surcharge)}
+                      </Td>
+                      <Td className="text-right whitespace-nowrap">
+                        <span
+                          className={canceled ? "line-through opacity-60" : ""}
+                        >
+                          {money(total)}
+                        </span>
+                      </Td>
+                      <Td className="whitespace-nowrap">
+                        <Badge>{labelMethod(method)}</Badge>
+                        {canceled && (
+                          <span className="ml-2 px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816] text-[11px]">
+                            ANULADA
+                          </span>
+                        )}
+                      </Td>
+                      <Td
+                        className="truncate max-w-[180px]"
+                        title={v.createdByEmail || "—"}
+                      >
                         {v.createdByEmail || "—"}
                       </Td>
                     </tr>
@@ -169,6 +239,7 @@ export default function HistorialVentas({ location = "pv1" }) {
             const method = v?.payment?.method || "—";
             const createdMs =
               tsToMs(v.createdAt) ?? idToMs(v._id) ?? idToMs(v.id) ?? 0;
+            const canceled = isCanceled(v);
 
             return (
               <button
@@ -179,7 +250,11 @@ export default function HistorialVentas({ location = "pv1" }) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-sm font-semibold leading-tight">
-                      {money(total)}{" "}
+                      <span
+                        className={canceled ? "line-through opacity-60" : ""}
+                      >
+                        {money(total)}
+                      </span>{" "}
                       <span className="font-normal">• {items} ítems</span>
                     </div>
                     <div className="text-xs text-white/60 mt-0.5">
@@ -190,6 +265,11 @@ export default function HistorialVentas({ location = "pv1" }) {
                       <Badge>{labelMethod(method)}</Badge>
                       {typeof surcharge === "number" && surcharge > 0 && (
                         <Badge>Recargo {money(surcharge)}</Badge>
+                      )}
+                      {canceled && (
+                        <span className="px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816] text-[11px]">
+                          ANULADA
+                        </span>
                       )}
                     </div>
                   </div>
@@ -210,7 +290,7 @@ export default function HistorialVentas({ location = "pv1" }) {
           onClose={() => setSel(null)}
           onDeleted={() => {
             setSel(null);
-            ctx?.fetchVentas?.(); // refresca listado
+            ctx?.fetchVentas?.(); // refresca listado + resumen
           }}
         />
       )}
@@ -223,7 +303,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
 
-  // Normalizo
   const createdMs =
     tsToMs(venta?.createdAt) ?? idToMs(venta?._id) ?? idToMs(venta?.id) ?? 0;
 
@@ -241,17 +320,15 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
   const s = venta?.payment?.surcharge || {};
   const hasSurcharge = !!s?.applied || surcharge > 0;
 
-  // Soft delete: marcar como anulada dentro del chunk
   async function handleDeleteVenta() {
     if (!firestore) return toast.error("Firestore no disponible");
-
     const ok = window.confirm(
       "¿Anular esta venta?\n\nSe marcará como 'voided' dentro del chunk."
     );
     if (!ok) return;
 
-    const chunkId = venta?.chunkDoc; // ej: "001"
-    const fieldKey = venta?._id; // ej: "v_1695851112345"
+    const chunkId = venta?.chunkDoc;
+    const fieldKey = venta?._id;
     if (!chunkId || !fieldKey) {
       toast.error("Faltan referencias del chunk/venta.");
       return;
@@ -265,7 +342,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
         [`${fieldKey}.updatedAt`]: serverTimestamp(),
       });
 
-      // Optimista local
       if (typeof ctx?.setVentas === "function") {
         ctx.setVentas((prev = []) =>
           prev.map((v) =>
@@ -284,12 +360,11 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
     }
   }
 
-  // Hard delete: eliminar definitivamente el campo v_* del chunk
   async function handleHardDeleteVenta() {
     if (!firestore) return toast.error("Firestore no disponible");
 
-    const chunkId = venta?.chunkDoc; // ej: "001"
-    const fieldKey = venta?._id; // ej: "v_1695851112345"
+    const chunkId = venta?.chunkDoc;
+    const fieldKey = venta?._id;
     if (!chunkId || !fieldKey) {
       toast.error("Faltan referencias del chunk/venta.");
       return;
@@ -299,7 +374,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
       "⚠️ Esta acción eliminará DEFINITIVAMENTE la venta del chunk.\n\n¿Continuar?"
     );
     if (!confirm1) return;
-
     const typed = window.prompt(
       "Para confirmar, escribí: ELIMINAR\n\n(Esto no podrá deshacerse)"
     );
@@ -309,7 +383,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
       const ref = doc(firestore, "ventas", chunkId);
       await updateDoc(ref, { [fieldKey]: deleteField() });
 
-      // Optimista local
       if (typeof ctx?.setVentas === "function") {
         ctx.setVentas((prev = []) =>
           prev.filter((v) => !(v._id === fieldKey && v.chunkDoc === chunkId))
@@ -326,12 +399,8 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
 
   return (
     <div className="fixed inset-0 z-40">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-
-      {/* Panel derecho */}
       <div className="absolute right-0 top-0 h-full w-full md:w-[980px] bg-[#0C212D] border-l border-white/10 shadow-2xl flex flex-col">
-        {/* Header */}
         <div className="px-4 md:px-5 py-3 md:py-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#0C212D]/95 backdrop-blur">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-[#EE7203] to-[#FF3816] ring-1 ring-white/10 flex items-center justify-center">
@@ -360,7 +429,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
           </div>
         </div>
 
-        {/* Contenido */}
         <div className="flex-1 overflow-auto p-4 md:p-5">
           <div className="grid lg:grid-cols-5 gap-4 md:gap-5">
             {/* LÍNEAS */}
@@ -422,7 +490,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
 
             {/* RESUMEN & PAGO */}
             <div className="lg:col-span-2 space-y-4 md:space-y-5">
-              {/* Totales */}
               <div className="rounded-2xl border border-white/10 p-4">
                 <p className="text-xs text-white/60 mb-2">Totales</p>
                 <KV label="Subtotal" value={money(subtotal)} />
@@ -446,7 +513,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
                 </div>
               </div>
 
-              {/* Pago */}
               <div className="rounded-2xl border border-white/10 p-4">
                 <p className="text-xs text-white/60 mb-2">Pago</p>
                 <div className="flex flex-wrap items-center gap-2">
@@ -460,7 +526,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
                 </div>
               </div>
 
-              {/* Metadatos */}
               <div className="rounded-2xl border border-white/10 p-4">
                 <p className="text-xs text-white/60 mb-2">Metadatos</p>
                 <div className="grid grid-cols-2 gap-2 text-sm">
@@ -479,7 +544,7 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
           </div>
         </div>
 
-        {/* Footer (stack en mobile) */}
+        {/* Footer */}
         <div className="px-4 md:px-5 py-3 border-t border-white/10 bg-[#0C212D]/95 backdrop-blur">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="text-sm text-white/70">
@@ -494,8 +559,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
               >
                 Cerrar
               </button>
-
-              {/* Soft delete (anular) */}
               <button
                 onClick={handleDeleteVenta}
                 className="px-4 py-2 rounded-xl text-sm bg-red-500/20 hover:bg-red-500/25 text-red-200 ring-1 ring-white/10"
@@ -503,8 +566,6 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
               >
                 Anular
               </button>
-
-              {/* Hard delete (eliminar definitivamente) */}
               <button
                 onClick={handleHardDeleteVenta}
                 className="px-4 py-2 rounded-xl text-sm bg-red-600/20 hover:bg-red-600/30 text-red-200 ring-1 ring-red-500/40"
@@ -583,4 +644,14 @@ function labelMethod(m) {
   if (m === "transferencia") return "Transferencia / QR";
   if (m === "mercadago" || m === "mercadopago") return "MercadoPago";
   return m || "—";
+}
+function isCanceled(v) {
+  const s = String(v?.status || v?.estado || "").toLowerCase();
+  return (
+    s.includes("anul") ||
+    s.includes("void") ||
+    v?.canceled === true ||
+    v?.anulada === true ||
+    v?.void === true
+  );
 }

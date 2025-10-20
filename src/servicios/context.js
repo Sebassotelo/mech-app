@@ -19,6 +19,10 @@ function Context(props) {
   const [ventas, setVentas] = useState([]); // flatten v_* de /ventas/001,002...
   const [egresos, setEgresos] = useState([]);
 
+  // ===== Presupuestos (nuevo: fetch 1 sola vez desde Context) =====
+  const [presupuestos, setPresupuestos] = useState([]); // flatten b_* de /presupuestos/001,002...
+  const [presupuestosLoading, setPresupuestosLoading] = useState(false);
+
   // ===== Firebase clients =====
   const auth = getAuth(firebaseApp);
   const firestore = getFirestore(firebaseApp);
@@ -106,18 +110,16 @@ function Context(props) {
         const data = docSnapshot.data() || {};
         Object.entries(data).forEach(([key, val]) => {
           if (!key.startsWith("v_") || !val) return;
-          // Compatibilidad: exponemos _id y id con el mismo valor
           const saleId = key; // ej: v_1695851112345
           allVentas.push({
             _id: saleId,
             id: saleId,
             chunkDoc: docSnapshot.id, // ej: 001, 002
-            ...val, // { location, lines[], total, createdAt, status?, createdByEmail?, ... }
+            ...val,
           });
         });
       });
 
-      // Ordenar: más recientes primero (por createdAt o por id numérico)
       allVentas.sort(
         (a, b) =>
           toMs(b?.createdAt, b?.id || b?._id) -
@@ -133,12 +135,56 @@ function Context(props) {
     }
   };
 
+  // ===== Fetch: Presupuestos (flatten b_* de /presupuestos/001,002...) =====
+  const fetchPresupuestos = async () => {
+    if (!firestore) return;
+    setPresupuestosLoading(true);
+    try {
+      const ref = collection(firestore, "presupuestos");
+      const snapshot = await getDocs(ref);
+
+      const list = [];
+      snapshot.docs.forEach((docSnap) => {
+        const data = docSnap.data() || {};
+        Object.entries(data).forEach(([key, val]) => {
+          if (!key.startsWith("b_") || !val) return;
+          list.push({
+            id: key, // ej: b_1695851112345
+            chunkDoc: docSnap.id, // ej: 001
+            ...val,
+          });
+        });
+      });
+
+      // Más recientes primero
+      list.sort(
+        (a, b) => toMs(b?.createdAt, b?.id) - toMs(a?.createdAt, a?.id)
+      );
+
+      setPresupuestos(list);
+    } catch (e) {
+      console.error("Error al traer presupuestos:", e);
+      setPresupuestos([]);
+    } finally {
+      setPresupuestosLoading(false);
+    }
+  };
+
+  // === Traer presupuestos una sola vez al montar el Context ===
+  useEffect(() => {
+    // Cuando hay firestore disponible, los cargo una vez
+    if (firestore) {
+      fetchPresupuestos();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firestore]);
+
   // ===== Helper local =====
   function toMs(ts, idFallback) {
     if (ts?.toDate) return ts.toDate().getTime(); // Firestore Timestamp
     if (ts instanceof Date) return ts.getTime(); // Date
     if (typeof ts?.seconds === "number") return ts.seconds * 1000; // {seconds,nanos}
-    const n = Number(String(idFallback || "").replace(/^v_/, ""));
+    const n = Number(String(idFallback || "").replace(/^\D*_/, "")); // soporta v_ / b_
     return Number.isFinite(n) ? n : 0;
   }
 
@@ -164,6 +210,8 @@ function Context(props) {
         productos,
         ventas,
         egresos,
+        presupuestos, // <<<<<< NUEVO
+        presupuestosLoading, // <<<<<< NUEVO
 
         // setters
         setCategorias,
@@ -172,11 +220,13 @@ function Context(props) {
         setEgresos,
         setUser,
         setPermisos,
+        setPresupuestos, // (por si querés actualizar local)
 
         // fetchers
         fetchCategorias,
         fetchProductos,
         fetchVentas,
+        fetchPresupuestos, // <<<<<< NUEVO
       }}
     >
       {props.children}

@@ -1,3 +1,4 @@
+// /src/componentes/ventas/Ventas.jsx
 "use client";
 import React, { useContext, useMemo, useState, useEffect } from "react";
 import { toast } from "sonner";
@@ -8,6 +9,8 @@ import {
   getDocs,
   runTransaction,
   serverTimestamp,
+  updateDoc,
+  deleteField,
 } from "firebase/firestore";
 
 const CHUNK_SIZE = 200;
@@ -34,9 +37,18 @@ export default function Ventas({ location = "pv1" }) {
   const firestore = ctx?.firestore;
   const auth = ctx?.auth;
 
+  const userRole =
+    ctx?.role || ctx?.claims?.role || ctx?.userRole || ctx?.profile?.role;
+  const canEditStock = ["admin", "manager"].includes(String(userRole || ""));
+
   // Productos desde Context
   const productosCtx = Array.isArray(ctx?.productos) ? ctx.productos : [];
   const loading = ctx?.loader === true && productosCtx.length === 0;
+
+  // Presupuestos desde Context (fetch 1 sola vez en Context)
+  const presupuestos = Array.isArray(ctx?.presupuestos) ? ctx.presupuestos : [];
+  const loadingBudgets = !!ctx?.presupuestosLoading;
+  const fetchPresupuestos = ctx?.fetchPresupuestos;
 
   const [q, setQ] = useState("");
   const [onlyStock, setOnlyStock] = useState(false);
@@ -49,7 +61,9 @@ export default function Ventas({ location = "pv1" }) {
   const [extraPercent, setExtraPercent] = useState(0); // %
   const [extraFixed, setExtraFixed] = useState(0); // $
 
-  // Restaurar preferencias
+  // ===== Filtro de presupuestos (solo UI) =====
+  const [qBudgets, setQBudgets] = useState("");
+
   useEffect(() => {
     try {
       const m = localStorage.getItem(LS.method);
@@ -64,7 +78,6 @@ export default function Ventas({ location = "pv1" }) {
       if (f !== null) setExtraFixed(Number(f) || 0);
     } catch {}
   }, []);
-  // Guardar preferencias
   useEffect(() => {
     try {
       localStorage.setItem(LS.method, paymentMethod);
@@ -168,7 +181,9 @@ export default function Ventas({ location = "pv1" }) {
     });
   }
 
-  // ===== Helpers ventas chunking =====
+  /* =========================
+   * Helpers chunking ventas
+   * ========================= */
   function pad3(n) {
     return String(n).padStart(3, "0");
   }
@@ -212,8 +227,341 @@ export default function Ventas({ location = "pv1" }) {
     }
   }
 
-  // 🔸 Checkout
-  async function checkout() {
+  /* =========================
+   * Helpers chunking presupuestos
+   * ========================= */
+  async function getLastBudgetDocId() {
+    const colRef = collection(firestore, "presupuestos");
+    const snap = await getDocs(colRef);
+    if (snap.empty) return "001";
+    const ids = snap.docs
+      .map((d) => d.id)
+      .filter((id) => /^\d+$/.test(id))
+      .map((id) => parseInt(id, 10))
+      .sort((a, b) => a - b);
+    if (ids.length === 0) return "001";
+    return pad3(ids[ids.length - 1]);
+  }
+  async function appendBudgetChunked(budgetObj) {
+    let targetId = await getLastBudgetDocId();
+    let attempts = 0;
+    while (attempts < 3) {
+      const ref = doc(firestore, "presupuestos", targetId);
+      try {
+        await runTransaction(firestore, async (tx) => {
+          const snap = await tx.get(ref);
+          const data = snap.exists() ? snap.data() || {} : {};
+          const keys = Object.keys(data).filter((k) => k.startsWith("b_"));
+          if (keys.length >= CHUNK_SIZE) throw new Error("FULL");
+          const budgetId = `b_${Date.now()}`;
+          const toWrite = {};
+          toWrite[budgetId] = budgetObj;
+          tx.set(ref, toWrite, { merge: true });
+        });
+        return { ok: true, docId: targetId };
+      } catch (e) {
+        if (String(e?.message).includes("FULL")) {
+          targetId = pad3(parseInt(targetId, 10) + 1);
+          attempts++;
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  /* =========================
+   * Guardar como Presupuesto
+   * ========================= */
+  async function saveAsBudget() {
+    if (!firestore) return toast.error("Firestore no disponible");
+    const lines = Object.values(cart);
+    if (lines.length === 0) return toast.error("Agregá productos al carrito");
+
+    let nombre = prompt("Nombre del presupuesto (ej: Cliente + Patente):", "");
+    if (nombre == null) return; // cancelado
+    nombre = (nombre || "").trim();
+    if (!nombre) return toast.error("Ingresá un nombre para el presupuesto");
+
+    const user = auth?.currentUser || ctx?.user || null;
+
+    const payload = {
+      orgId: ctx?.orgId || "default_org",
+      location,
+      name: nombre,
+      createdAt: serverTimestamp(),
+      createdBy: user?.uid || null,
+      createdByEmail: user?.email || null,
+      lines: lines.map(({ prod, qty }) => ({
+        productId: prod.id,
+        chunkDoc: prod.chunkDoc,
+        sku: prod.sku || null,
+        name: prod.name || null,
+        category: prod.category || null,
+        qty,
+        unitPrice: Number(finalPrice(prod)),
+        subtotal: Number(finalPrice(prod)) * qty,
+      })),
+      totals: {
+        subtotal: Number(subtotal),
+        surchargeAmount: Number(surchargeAmount),
+        total: Number(total),
+        currency: "ARS",
+      },
+      paymentLike: {
+        // no es una venta, pero guardamos cómo se calculó
+        surcharge: {
+          applied: !!applyExtra,
+          mode: extraMode,
+          value:
+            extraMode === "percent"
+              ? Number(extraPercent) || 0
+              : Number(extraFixed) || 0,
+          amount: Number(surchargeAmount),
+        },
+      },
+      status: "draft", // es un presupuesto, no una venta
+    };
+
+    try {
+      await toast.promise(appendBudgetChunked(payload), {
+        loading: "Guardando presupuesto…",
+        success: "Presupuesto guardado",
+        error: "No se pudo guardar el presupuesto",
+      });
+      if (typeof fetchPresupuestos === "function") await fetchPresupuestos();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function printBudget(b) {
+    const now = new Date();
+    const fmt = (n) =>
+      typeof n === "number"
+        ? n.toLocaleString("es-AR", { style: "currency", currency: "ARS" })
+        : n;
+
+    const rows = (b.lines || [])
+      .map(
+        (l) => `
+        <tr>
+          <td>${esc(l.sku || "-")}</td>
+          <td>${esc(l.name || "-")}</td>
+          <td style="text-align:right">${l.qty}</td>
+          <td style="text-align:right">${fmt(l.unitPrice)}</td>
+          <td style="text-align:right">${fmt(l.subtotal)}</td>
+        </tr>`
+      )
+      .join("");
+
+    // HTML completo con auto-print al cargar
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Presupuesto - ${esc(b.name || "")}</title>
+<style>
+  body{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; color:#111; }
+  .shell{ max-width: 900px; margin: 0 auto; padding: 24px; }
+  h1{ margin:0 0 4px; font-size:22px; }
+  h2{ margin:0 0 12px; font-size:14px; color:#444;}
+  table{ width:100%; border-collapse:collapse; margin-top:8px; font-size:12px;}
+  th,td{ border-bottom:1px solid #ddd; padding:8px; }
+  thead th{ background:#f5f5f5; text-align:left;}
+  .totals{ margin-top:12px; width:100%; }
+  .totals td{ padding:6px 8px; }
+  .right{ text-align:right;}
+  .muted{ color:#666; font-size:11px; }
+  .badge{ display:inline-block; padding:2px 8px; border:1px solid #999; border-radius:999px; font-size:11px; color:#444; }
+  @media print { .no-print{ display:none } }
+</style>
+</head>
+<body onload="setTimeout(()=>{ try{ window.focus(); window.print(); }catch(e){} }, 100);">
+  <div class="shell">
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:12px;">
+      <div>
+        <h1>Presupuesto</h1>
+        <h2>${esc(b.name || "")}</h2>
+        <div class="muted">Generado: ${now.toLocaleString("es-AR")}</div>
+        <div class="muted">Sede: ${esc((b.location || "").toUpperCase())}</div>
+      </div>
+      <div><span class="badge">Mecánico App</span></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Producto</th>
+          <th class="right">Cant.</th>
+          <th class="right">Unit.</th>
+          <th class="right">Subtotal</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    <table class="totals">
+      <tr>
+        <td class="right" style="width:80%;">Subtotal</td>
+        <td class="right" style="width:20%;">${fmt(
+          b?.totals?.subtotal || 0
+        )}</td>
+      </tr>
+      <tr>
+        <td class="right">Recargo</td>
+        <td class="right">${fmt(b?.totals?.surchargeAmount || 0)}</td>
+      </tr>
+      <tr>
+        <td class="right"><strong>Total</strong></td>
+        <td class="right"><strong>${fmt(b?.totals?.total || 0)}</strong></td>
+      </tr>
+    </table>
+
+    <p class="muted">* Este documento es un presupuesto. No implica reserva de stock ni constituye factura.</p>
+
+    <button class="no-print" onclick="window.print()">Imprimir / Guardar PDF</button>
+  </div>
+</body>
+</html>`;
+
+    try {
+      // 1) Intento abrir en una pestaña nueva con un Blob (menos probable que lo bloquee)
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const w = window.open(url, "_blank", "noopener,noreferrer");
+
+      if (w && typeof w.focus === "function") {
+        // liberar la URL cuando la pestaña nueva ya tuvo tiempo de cargar
+        setTimeout(() => URL.revokeObjectURL(url), 30_000);
+        return;
+      }
+
+      // 2) Fallback sin popups: iframe oculto que imprime
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
+      iframe.style.border = "0";
+      document.body.appendChild(iframe);
+      iframe.onload = () => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } finally {
+          // liberar recursos y remover iframe
+          setTimeout(() => {
+            URL.revokeObjectURL(url);
+            document.body.removeChild(iframe);
+          }, 1000);
+        }
+      };
+      iframe.src = url;
+    } catch (e) {
+      console.error(e);
+      toast.error("No se pudo generar el PDF para imprimir");
+    }
+  }
+
+  async function deleteBudget(b) {
+    if (!firestore) return;
+    if (!confirm("¿Eliminar este presupuesto?")) return;
+    try {
+      const ref = doc(firestore, "presupuestos", b.chunkDoc);
+      await toast.promise(updateDoc(ref, { [b.id]: deleteField() }), {
+        loading: "Eliminando…",
+        success: "Presupuesto eliminado",
+        error: "No se pudo eliminar",
+      });
+      if (typeof fetchPresupuestos === "function") await fetchPresupuestos();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function loadBudgetIntoCart(b) {
+    const next = {};
+    for (const l of b.lines || []) {
+      // busco el producto real para respetar stock y precio actual
+      const p = productosCtx.find((x) => x.id === l.productId) || {
+        // fallback plano
+        id: l.productId,
+        name: l.name,
+        sku: l.sku,
+        category: l.category,
+        [stockField]: 9999, // permito cargar aunque no esté en memoria
+        price: l.unitPrice,
+        priceDiscount: 0,
+        discountActive: false,
+        chunkDoc: l.chunkDoc,
+      };
+      next[p.id] = { prod: p, qty: l.qty };
+    }
+    setCart(next);
+    toast.success("Presupuesto cargado al carrito");
+  }
+
+  /* =========================
+   * STOCK RÁPIDO (admin/manager)
+   * ========================= */
+  async function addStockQuick(prod) {
+    const deltaStr = prompt(
+      `Sumar al stock (${location.toUpperCase()}) para "${
+        prod.name
+      }"\nIngrese cantidad (puede ser negativa para restar):`,
+      "1"
+    );
+    if (deltaStr == null) return;
+    const delta = parseInt(deltaStr, 10);
+    if (isNaN(delta) || delta === 0) return toast.error("Cantidad inválida");
+
+    const ref = doc(firestore, "productos", prod.chunkDoc);
+    try {
+      await toast.promise(
+        runTransaction(firestore, async (tx) => {
+          const snap = await tx.get(ref);
+          if (!snap.exists())
+            throw new Error("Documento de productos no existe");
+          const data = snap.data() || {};
+          const field = `p_${prod.id}`;
+          const obj = data[field];
+          if (!obj) throw new Error("Producto no encontrado");
+          const current = parseInt(obj[stockField] ?? 0, 10);
+          const next = Math.max(0, current + delta);
+          const updates = {};
+          updates[`${field}.${stockField}`] = next;
+          updates[`${field}.updatedAt`] = serverTimestamp();
+          tx.update(ref, updates);
+        }),
+        {
+          loading: "Actualizando stock…",
+          success: "Stock actualizado",
+          error: (e) => e?.message || "No se pudo actualizar",
+        }
+      );
+
+      // Update local context
+      if (typeof ctx?.setProductos === "function") {
+        ctx.setProductos((prev = []) =>
+          prev.map((p) => {
+            if (p.id !== prod.id) return p;
+            const cur = parseInt(p[stockField] ?? 0, 10);
+            return { ...p, [stockField]: Math.max(0, cur + delta) };
+          })
+        );
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  /* =========================
+   * Checkout → VENTA
+   * ========================= */
+  const checkout = async () => {
     if (!firestore) return toast.error("Firestore no disponible");
     const lines = Object.values(cart);
     if (lines.length === 0) return toast.error("Agregá productos al carrito");
@@ -251,7 +599,7 @@ export default function Ventas({ location = "pv1" }) {
         });
       }
 
-      // 2) Registrar la venta en /ventas
+      // 2) Registrar venta
       const user = auth?.currentUser || ctx?.user || null;
 
       const ventaPayload = {
@@ -267,28 +615,27 @@ export default function Ventas({ location = "pv1" }) {
           name: prod.name || null,
           category: prod.category || null,
           qty,
-          unitPrice: Number(finalPrice(prod)), // precio base (sin recargo)
+          unitPrice: Number(finalPrice(prod)),
           subtotal: Number(finalPrice(prod)) * qty,
         })),
         totals: {
           subtotal: Number(subtotal),
-          surchargeAmount: Number(surchargeAmount), // 💾 recargo calculado
+          surchargeAmount: Number(surchargeAmount),
           total: Number(total),
           currency: "ARS",
         },
         payment: {
-          method: paymentMethod, // transferencia | efectivo | mercadago
+          method: paymentMethod,
           provider: paymentMethod === "mercadago" ? "mercadopago" : "manual",
           status: "not_started",
-          // 💾 detalle de recargo (según modo y valor actual)
           surcharge: {
             applied: !!applyExtra,
-            mode: extraMode, // "percent" | "fixed"
+            mode: extraMode,
             value:
               extraMode === "percent"
                 ? Number(extraPercent) || 0
                 : Number(extraFixed) || 0,
-            amount: Number(surchargeAmount), // ARS aplicados
+            amount: Number(surchargeAmount),
           },
         },
         status: "pending",
@@ -296,7 +643,7 @@ export default function Ventas({ location = "pv1" }) {
 
       await appendVentaChunked(ventaPayload);
 
-      // 3) ✅ Actualizar stock en memoria
+      // 3) Actualizar stock en memoria
       if (typeof ctx?.setProductos === "function") {
         ctx.setProductos((prev = []) =>
           prev.map((p) => {
@@ -320,7 +667,7 @@ export default function Ventas({ location = "pv1" }) {
     } catch (e) {
       console.error(e);
     }
-  }
+  };
 
   if (location === "taller") {
     return (
@@ -330,11 +677,24 @@ export default function Ventas({ location = "pv1" }) {
     );
   }
 
+  /* =========================
+   * UI
+   * ========================= */
+  const budgetsFiltered = useMemo(() => {
+    const t = qBudgets.trim().toLowerCase();
+    return (presupuestos || []).filter((b) => {
+      if (!t) return true;
+      return (
+        (b.name || "").toLowerCase().includes(t) ||
+        (b.createdByEmail || "").toLowerCase().includes(t)
+      );
+    });
+  }, [presupuestos, qBudgets]);
+
   return (
     <div className="grid gap-6 md:grid-cols-3 overflow-x-hidden md:overflow-x-visible">
       {/* Productos */}
       <div className="md:col-span-2 w-full overflow-x-hidden md:overflow-visible">
-        {/* Filtros: mobile-first, se apilan */}
         <div className="mb-3 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
           <input
             value={q}
@@ -343,7 +703,6 @@ export default function Ventas({ location = "pv1" }) {
             className="w-full sm:flex-1 rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
           />
 
-          {/* Solo con stock */}
           <label className="inline-flex items-center gap-2 text-sm text-white/80">
             <input
               type="checkbox"
@@ -354,7 +713,6 @@ export default function Ventas({ location = "pv1" }) {
             Solo con stock
           </label>
 
-          {/* Page size selector */}
           <label className="inline-flex items-center gap-2 text-sm text-white/80">
             Ver:
             <select
@@ -371,7 +729,7 @@ export default function Ventas({ location = "pv1" }) {
           </label>
         </div>
 
-        {/* Tabla md+ (desktop intacto) */}
+        {/* Tabla md+ */}
         <div className="hidden md:block overflow-x-auto rounded-2xl border border-white/10">
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-white/70">
@@ -381,7 +739,7 @@ export default function Ventas({ location = "pv1" }) {
                 <Th>Cat.</Th>
                 <Th className="text-right">Precio</Th>
                 <Th className="text-right">Stock {location.toUpperCase()}</Th>
-                <Th className="w-28 text-center">Acción</Th>
+                <Th className="w-40 text-center">Acción</Th>
               </tr>
             </thead>
             <tbody>
@@ -409,19 +767,42 @@ export default function Ventas({ location = "pv1" }) {
                       <Td className="font-medium">{p.name}</Td>
                       <Td>{p.category || "-"}</Td>
                       <Td className="text-right">{money(finalPrice(p))}</Td>
-                      <Td className="text-right">{stock}</Td>
+                      <Td className="text-right">
+                        <div className="inline-flex items-center gap-2 justify-end w-full">
+                          <span>{stock}</span>
+                          {canEditStock && (
+                            <button
+                              onClick={() => addStockQuick(p)}
+                              className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/15 text-xs"
+                              title="Ajustar stock rápido"
+                            >
+                              + stock
+                            </button>
+                          )}
+                        </div>
+                      </Td>
                       <Td className="text-center">
-                        <button
-                          onClick={() => addToCart(p)}
-                          disabled={stock <= 0}
-                          className={`px-3 py-1.5 rounded-lg text-xs ${
-                            stock > 0
-                              ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
-                              : "bg-white/10 text-white/50 cursor-not-allowed"
-                          }`}
-                        >
-                          Agregar
-                        </button>
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => addToCart(p)}
+                            disabled={stock <= 0}
+                            className={`px-3 py-1.5 rounded-lg text-xs ${
+                              stock > 0
+                                ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                                : "bg-white/10 text-white/50 cursor-not-allowed"
+                            }`}
+                          >
+                            Agregar
+                          </button>
+                          {canEditStock && (
+                            <button
+                              onClick={() => addStockQuick(p)}
+                              className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
+                            >
+                              Ajustar
+                            </button>
+                          )}
+                        </div>
                       </Td>
                     </tr>
                   );
@@ -431,7 +812,7 @@ export default function Ventas({ location = "pv1" }) {
           </table>
         </div>
 
-        {/* Cards mobile (sin overflow X) */}
+        {/* Cards mobile */}
         <div className="md:hidden space-y-2 w-full overflow-hidden">
           {loading ? (
             <div className="rounded-xl border border-white/10 p-3 text-white/60">
@@ -461,17 +842,27 @@ export default function Ventas({ location = "pv1" }) {
                         {money(finalPrice(p))} • Stock {stock}
                       </div>
                     </div>
-                    <button
-                      onClick={() => addToCart(p)}
-                      disabled={stock <= 0}
-                      className={`shrink-0 px-3 py-1.5 rounded-lg text-xs ${
-                        stock > 0
-                          ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
-                          : "bg-white/10 text-white/50 cursor-not-allowed"
-                      }`}
-                    >
-                      Agregar
-                    </button>
+                    <div className="flex flex-col gap-1">
+                      <button
+                        onClick={() => addToCart(p)}
+                        disabled={stock <= 0}
+                        className={`shrink-0 px-3 py-1.5 rounded-lg text-xs ${
+                          stock > 0
+                            ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                            : "bg-white/10 text-white/50 cursor-not-allowed"
+                        }`}
+                      >
+                        Agregar
+                      </button>
+                      {canEditStock && (
+                        <button
+                          onClick={() => addStockQuick(p)}
+                          className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
+                        >
+                          + stock
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -529,13 +920,13 @@ export default function Ventas({ location = "pv1" }) {
         )}
       </div>
 
-      {/* Carrito / Pagos */}
+      {/* Carrito / Pagos / Presupuestos */}
       <div className="md:col-span-1 w-full overflow-x-hidden md:overflow-visible">
-        <div className="rounded-2xl border border-white/10 bg-[#0C212D]/40 p-4 md:sticky md:top-4">
-          <h3 className="font-semibold mb-3">Carrito</h3>
+        <div className="rounded-2xl border border-white/10 bg-[#0C212D]/40 p-4 md:sticky md:top-4 space-y-4">
+          <h3 className="font-semibold">Carrito</h3>
 
           {/* MÉTODO DE PAGO */}
-          <div className="mb-4 rounded-xl border border-white/10 p-3 bg-white/5">
+          <div className="rounded-xl border border-white/10 p-3 bg-white/5">
             <p className="text-xs text-white/70 mb-2">Medio de pago</p>
             <select
               value={paymentMethod}
@@ -575,7 +966,6 @@ export default function Ventas({ location = "pv1" }) {
                   <option value="fixed">$ Monto fijo</option>
                 </select>
 
-                {/* El input muestra el número del modo actual */}
                 <input
                   type="number"
                   min="0"
@@ -603,6 +993,7 @@ export default function Ventas({ location = "pv1" }) {
             </div>
           </div>
 
+          {/* Items del carrito */}
           {Object.values(cart).length === 0 ? (
             <p className="text-sm text-white/60">Sin productos.</p>
           ) : (
@@ -646,14 +1037,99 @@ export default function Ventas({ location = "pv1" }) {
                 </div>
               </div>
 
-              <button
-                onClick={checkout}
-                className="w-full mt-2 px-4 py-2 rounded-xl bg-gradient-to-r from-[#EE7203] to-[#FF3816] font-medium"
-              >
-                Finalizar venta
-              </button>
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  onClick={checkout}
+                  className="w-full px-4 py-2 rounded-xl bg-gradient-to-r from-[#EE7203] to-[#FF3816] font-medium"
+                >
+                  Finalizar venta
+                </button>
+
+                <button
+                  onClick={saveAsBudget}
+                  className="w-full px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-medium"
+                  title="Guardar carrito como presupuesto"
+                >
+                  Guardar como presupuesto
+                </button>
+              </div>
             </div>
           )}
+
+          {/* Presupuestos guardados */}
+          <div className="pt-2 border-t border-white/10">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <h4 className="font-semibold text-sm">Presupuestos</h4>
+              <button
+                onClick={() =>
+                  typeof fetchPresupuestos === "function" && fetchPresupuestos()
+                }
+                className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/15"
+                title="Refrescar"
+              >
+                Recargar
+              </button>
+            </div>
+            <input
+              value={qBudgets}
+              onChange={(e) => setQBudgets(e.target.value)}
+              placeholder="Buscar presupuesto…"
+              className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70 mb-2"
+            />
+            <div className="max-h-64 overflow-auto rounded-lg border border-white/10">
+              {loadingBudgets ? (
+                <div className="p-3 text-white/60 text-sm">Cargando…</div>
+              ) : budgetsFiltered.length === 0 ? (
+                <div className="p-3 text-white/60 text-sm">Sin resultados</div>
+              ) : (
+                budgetsFiltered.slice(0, 25).map((b) => (
+                  <div
+                    key={`${b.chunkDoc}_${b.id}`}
+                    className="px-3 py-2 text-sm border-b border-white/5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">
+                          {b.name || "(sin nombre)"}
+                        </div>
+                        <div className="text-xs text-white/60 truncate">
+                          {b.createdByEmail || "—"} •{" "}
+                          {String(b.location || "").toUpperCase()} •{" "}
+                          {money(b?.totals?.total || 0)}
+                        </div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-1">
+                        <button
+                          onClick={() => loadBudgetIntoCart(b)}
+                          className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
+                          title="Cargar al carrito"
+                        >
+                          Cargar
+                        </button>
+                        <button
+                          onClick={() => printBudget(b)}
+                          className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
+                          title="Imprimir / PDF"
+                        >
+                          PDF
+                        </button>
+                        <button
+                          onClick={() => deleteBudget(b)}
+                          className="px-2 py-1 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-200 text-xs"
+                          title="Eliminar"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <p className="text-[11px] text-white/50 mt-1">
+              * Se muestran los últimos 25 resultados filtrados.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -668,7 +1144,6 @@ export default function Ventas({ location = "pv1" }) {
         .inp:focus {
           box-shadow: 0 0 0 2px rgba(238, 114, 3, 0.6);
         }
-        /* Evita que elementos hijos rompan el viewport en mobile */
         @media (max-width: 767px) {
           html,
           body {
@@ -704,4 +1179,10 @@ function finalPrice(p) {
 function money(n) {
   if (typeof n !== "number" || isNaN(n)) return "-";
   return n.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
+}
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
