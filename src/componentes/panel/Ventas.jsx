@@ -260,11 +260,20 @@ export default function Ventas({ location = "pv1" }) {
   /* =========================
    * Cart ops
    * ========================= */
+  // Reemplazá la función addToCart por esta
   function addToCart(prod) {
     const current = cart[prod.id]?.qty || 0;
     const available = parseInt(prod[stockField] ?? 0, 10);
     if (available <= current) return toast.error("Stock insuficiente");
-    setCart((c) => ({ ...c, [prod.id]: { prod, qty: current + 1 } }));
+
+    const nextQty = current + 1;
+
+    setCart((c) => ({ ...c, [prod.id]: { prod, qty: nextQty } }));
+
+    // Toast de agregado
+    toast.success(`Agregado al carrito: ${prod.name} (x${nextQty})`, {
+      description: `Unitario: ${money(finalPrice(prod))}`,
+    });
   }
 
   function setQty(prodId, qty) {

@@ -676,8 +676,41 @@ export default function Inventario() {
               <option value={0}>Todos</option>
             </select>
           </LabelPill>
+        </div>
 
-          {/* Selector de columnas */}
+        <div className="flex flex-wrap gap-1.5">
+          {/* Import Excel */}
+          <label
+            title="Importá productos desde Excel/CSV"
+            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 cursor-pointer text-sm"
+          >
+            Importar (.xlsx)
+            <input
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,text/csv"
+              onChange={handleImportExcel}
+              className="hidden"
+            />
+          </label>
+
+          {/* Export ExcelJS */}
+          <button
+            onClick={handleExportXLSX}
+            title="Exportar todo el inventario a Excel"
+            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+          >
+            Exportar Excel
+          </button>
+
+          <button
+            onClick={openCreate}
+            title="Crear un nuevo producto"
+            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] text-sm font-medium shadow hover:opacity-95"
+          >
+            Nuevo
+          </button>
+
+          {/* Selector de columnas (a la derecha) */}
           <div className="relative">
             <button
               ref={colsBtnRef}
@@ -690,7 +723,7 @@ export default function Inventario() {
             {showColsPanel && (
               <div
                 id="inv-cols-panel"
-                className="absolute left-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
+                className="absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
               >
                 <p className="text-xs text-white/60 mb-2">
                   Mostrar/ocultar columnas
@@ -742,39 +775,6 @@ export default function Inventario() {
               </div>
             )}
           </div>
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          {/* Import Excel */}
-          <label
-            title="Importá productos desde Excel/CSV"
-            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 cursor-pointer text-sm"
-          >
-            Importar (.xlsx)
-            <input
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,text/csv"
-              onChange={handleImportExcel}
-              className="hidden"
-            />
-          </label>
-
-          {/* Export ExcelJS */}
-          <button
-            onClick={handleExportXLSX}
-            title="Exportar todo el inventario a Excel"
-            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
-          >
-            Exportar Excel
-          </button>
-
-          <button
-            onClick={openCreate}
-            title="Crear un nuevo producto"
-            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] text-sm font-medium shadow hover:opacity-95"
-          >
-            Nuevo
-          </button>
         </div>
       </div>
 

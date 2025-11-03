@@ -28,7 +28,7 @@ function Layout({ children, title }) {
         />
       </Head>
 
-      <Toaster />
+      <Toaster position="top-center" />
 
       <div>{children}</div>
     </div>
