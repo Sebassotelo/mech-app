@@ -14,6 +14,25 @@ import { FiEdit2, FiTrash2 } from "react-icons/fi";
 
 const CHUNK_LIMIT = 200; // capacidad por documento
 
+// === Columnas (persistencia) ===
+const LS_COLS = "mx.inv.columns";
+const DEFAULT_COLS = {
+  nombre: true,
+  codigo: true,
+  tipo: true,
+  proveedor: true,
+  costo: true,
+  ivaC: false,
+  precio: true,
+  ivaV: false,
+  stock1: true,
+  stock2: true,
+  vtas: false,
+  cpras: false,
+  activo: true,
+  acciones: true,
+};
+
 export default function Inventario() {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
@@ -56,6 +75,37 @@ export default function Inventario() {
   const [onlyLow, setOnlyLow] = useState(false);
   const [lowThreshold, setLowThreshold] = useState(3);
 
+  // Columnas visibles
+  const [cols, setCols] = useState(DEFAULT_COLS);
+  const [showColsPanel, setShowColsPanel] = useState(false);
+  const colsBtnRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(LS_COLS);
+      if (saved) setCols({ ...DEFAULT_COLS, ...JSON.parse(saved) });
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_COLS, JSON.stringify(cols));
+    } catch {}
+  }, [cols]);
+
+  // cerrar panel columnas al click afuera
+  useEffect(() => {
+    function onDocClick(e) {
+      if (!showColsPanel) return;
+      const btn = colsBtnRef.current;
+      if (btn && (btn === e.target || btn.contains(e.target))) return;
+      const panel = document.getElementById("inv-cols-panel");
+      if (panel && panel.contains(e.target)) return;
+      setShowColsPanel(false);
+    }
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, [showColsPanel]);
+
   // Modal Crear/Editar
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -65,15 +115,11 @@ export default function Inventario() {
   const skuInputRef = useRef(null);
 
   // ===== Scanner de código de barras =====
-  // Detecta bursts de teclas muy rápidos y termina con Enter
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e) => {
-      // Ignorar si no estamos en el modal abierto
-      // (pero igual dejamos que funcione aunque el foco no esté en el SKU)
-      // Teclas a ignorar
       if (
         e.key === "Shift" ||
         e.key === "Tab" ||
@@ -82,33 +128,25 @@ export default function Inventario() {
         e.key === "Control"
       )
         return;
-
       const now = performance.now();
-      // Si pasó mucho tiempo entre teclas, reseteamos el buffer
       if (now - lastKeyTimeRef.current > 50) {
         scanBufferRef.current = "";
       }
       lastKeyTimeRef.current = now;
-
-      // Si es una tecla "visible", la acumulamos
       if (e.key.length === 1) {
         scanBufferRef.current += e.key;
       }
-
-      // Cuando llega Enter desde la pistola, volcamos al SKU
       if (e.key === "Enter") {
         if (scanBufferRef.current.length >= 3) {
           const code = scanBufferRef.current.trim();
           setForm((prev) => ({ ...prev, sku: code.toUpperCase() }));
-          // Llevamos foco al SKU si existe
           skuInputRef.current?.focus?.();
           toast.success("Código leído: " + code);
-          e.preventDefault(); // evita submit por Enter del lector
+          e.preventDefault();
         }
         scanBufferRef.current = "";
       }
     };
-
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
@@ -157,17 +195,10 @@ export default function Inventario() {
   const [pageSize, setPageSize] = useState(25); // 0 = todos
   const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    setPage(1);
-  }, [
-    qtext,
-    onlyActive,
-    onlyWithStock,
-    onlyLow,
-    lowThreshold,
-    items,
-    pageSize,
-  ]);
+  useEffect(
+    () => setPage(1),
+    [qtext, onlyActive, onlyWithStock, onlyLow, lowThreshold, items, pageSize]
+  );
 
   const total = filtered.length;
   const totalPages =
@@ -180,7 +211,6 @@ export default function Inventario() {
   const startIndex = pageSize === 0 ? 0 : (page - 1) * pageSize;
   const endIndex =
     pageSize === 0 ? total : Math.min(total, startIndex + pageSize);
-
   const pageItems = useMemo(
     () => filtered.slice(startIndex, endIndex),
     [filtered, startIndex, endIndex]
@@ -191,11 +221,6 @@ export default function Inventario() {
     setEditing(null);
     setForm(blankProduct());
     setOpen(true);
-    // opcional: dar foco inicial
-    setTimeout(() => {
-      // Si preferís foco directo al SKU cambiá esta línea por skuInputRef.current?.focus?.();
-      // document.querySelector('input[name="name"]')?.focus?.();
-    }, 0);
   }
   function openEdit(prod) {
     setEditing(prod);
@@ -232,7 +257,6 @@ export default function Inventario() {
     const payload = normalizeForSave(form);
     try {
       validate(payload);
-
       const run = async () => {
         if (editing?.id && editing?.chunkDoc) {
           const docRef = doc(firestore, "productos", editing.chunkDoc);
@@ -260,13 +284,11 @@ export default function Inventario() {
           await updateDoc(docRef, { [`p_${newId}`]: dataToWrite });
         }
       };
-
       await toast.promise(run(), {
         loading: "Guardando producto…",
         success: editing ? "Producto actualizado" : "Producto creado",
         error: (err) => err?.message || "Error al guardar",
       });
-
       setOpen(false);
       setEditing(null);
       setForm(blankProduct());
@@ -295,7 +317,7 @@ export default function Inventario() {
     }
   }
 
-  // ===== Import (xlsx/csv) con upsert por CHUNK y sin borrar faltantes =====
+  // ===== Import (xlsx/csv) =====
   async function handleImportExcel(ev) {
     const file = ev.target.files?.[0];
     ev.target.value = "";
@@ -314,7 +336,6 @@ export default function Inventario() {
     try {
       if (!firestore) throw new Error("Firestore no disponible");
 
-      // 1) Parse Excel/CSV
       const XLSX = await import("xlsx");
       const buff = await file.arrayBuffer();
       const wb = XLSX.read(buff, { type: "array" });
@@ -344,12 +365,10 @@ export default function Inventario() {
 
       setImp((s) => ({ ...s, total: mapped.length }));
 
-      // 2) Índices en memoria
       const byId = new Map(items.map((p) => [String(p.id), p]));
       const usedIds = new Set(items.map((p) => String(p.id)));
       const nextIdCounter = makeNextIdCounter(usedIds);
 
-      // Contador por chunk existente
       const counts = new Map(
         docsSnap.map((d) => [
           d.id,
@@ -358,7 +377,6 @@ export default function Inventario() {
       );
       const nextChunkName = makeNextChunkName(docsSnap.map((d) => d.id));
 
-      // 3) Acumuladores por doc => un updateDoc por chunk
       const upsertsByDoc = new Map();
       const docsToInit = new Set();
 
@@ -371,37 +389,43 @@ export default function Inventario() {
         upsertsByDoc.get(docId)[fieldKey] = valueObj;
       };
 
-      // 4) Recorrer filas y decidir upsert (update o create)
       for (const r of mapped) {
-        const payload = normalizeForSave({
-          ...blankProduct(),
-          name: r.name,
-          sku: r.sku,
-          category: r.category,
-          provider: r.provider,
-          price: r.price,
-          cost: r.cost,
-          stockPv1: r.stockPv1,
-          stockPv2: r.stockPv2 ?? 0,
-          minStock: r.minStock ?? 0,
-          taxable: r.taxable ?? true,
-          enabled: r.enabled,
-          description: r.description,
-          ivaCompras: r.ivaCompras,
-          ivaVentas: r.ivaVentas,
-          showInSales: r.showInSales,
-          showInPurchases: r.showInPurchases,
-          priceDiscount: r.priceDiscount ?? 0,
-          discountActive: r.discountActive ?? false,
-        });
-        validate(payload);
-
+        // 1) ID y existente (si lo hay)
         const desiredId = r.id ? pad6(r.id) : nextIdCounter();
         const existing = byId.get(desiredId);
         const fieldKey = `p_${desiredId}`;
 
+        // 2) Payload que NO pisa con vacíos del Excel
+        const payload = normalizeForSave({
+          ...blankProduct(),
+          name: r.name || existing?.name || "",
+          sku: r.sku || existing?.sku || "",
+          category: r.category || existing?.category || "",
+          provider: r.provider || existing?.provider || "",
+          description: r.description || existing?.description || "",
+
+          cost: r.cost ?? existing?.cost ?? 0,
+          ivaCompras: r.ivaCompras ?? existing?.ivaCompras ?? 0,
+          price: r.price ?? existing?.price ?? 0,
+          ivaVentas: r.ivaVentas ?? existing?.ivaVentas ?? 0,
+
+          stockPv1: r.stockPv1 ?? existing?.stockPv1 ?? 0,
+          stockPv2: r.stockPv2 ?? existing?.stockPv2 ?? 0,
+          minStock: r.minStock ?? existing?.minStock ?? 0,
+
+          enabled: r.enabled ?? existing?.enabled ?? true,
+          taxable: r.taxable ?? existing?.taxable ?? true,
+          showInSales: r.showInSales ?? existing?.showInSales ?? true,
+          showInPurchases:
+            r.showInPurchases ?? existing?.showInPurchases ?? true,
+
+          priceDiscount: r.priceDiscount ?? existing?.priceDiscount ?? 0,
+          discountActive: r.discountActive ?? existing?.discountActive ?? false,
+        });
+
+        validate(payload);
+
         if (existing) {
-          // UPDATE
           const docId = existing.chunkDoc;
           const valueObj = {
             ...existing,
@@ -413,7 +437,6 @@ export default function Inventario() {
           putInDocBatch(docId, fieldKey, valueObj);
           updated++;
         } else {
-          // CREATE
           let targetDocId = null;
           for (const [docId, count] of counts.entries()) {
             if (count < CHUNK_LIMIT) {
@@ -427,7 +450,6 @@ export default function Inventario() {
             counts.set(targetDocId, 1);
             docsToInit.add(targetDocId);
           }
-
           const valueObj = {
             ...payload,
             id: desiredId,
@@ -436,7 +458,6 @@ export default function Inventario() {
             updatedAt: serverTimestamp(),
           };
           putInDocBatch(targetDocId, fieldKey, valueObj);
-
           byId.set(desiredId, valueObj);
           usedIds.add(desiredId);
           created++;
@@ -448,7 +469,6 @@ export default function Inventario() {
         }
       }
 
-      // 5) Escribir por CHUNK
       for (const newDocId of docsToInit) {
         const createRef = doc(firestore, "productos", newDocId);
         await setDoc(createRef, {});
@@ -475,59 +495,134 @@ export default function Inventario() {
     }
   }
 
-  // ===== Export CSV =====
-  function handleExportCSV() {
-    const headers = [
-      "Id",
-      "Nombre",
-      "Tipo de Producto",
-      "Proveedor",
-      "Código",
-      "Stock",
-      "Costo",
-      "IVA Compras",
-      "Precio de Venta",
-      "IVA Ventas",
-      "Descripción",
-      "Activo",
-      "Mostrar en Ventas",
-      "Mostrar en Compras",
-    ];
+  // ===== Export Excel (ExcelJS, con estilos) =====
+  // Exporta TODO el inventario y TODAS las columnas estándar (ignora filtros/visibilidad)
+  async function handleExportXLSX() {
+    try {
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Inventario");
 
-    const rows = (filtered.length ? filtered : items).map((p) => [
-      safeCSV(p.id),
-      safeCSV(p.name),
-      safeCSV(p.category),
-      safeCSV(p.provider),
-      safeCSV(p.sku),
-      String(p.stockPv1 ?? 0),
-      numOut(p.cost),
-      numOut(p.ivaCompras),
-      numOut(finalPriceContado(p)),
-      numOut(p.ivaVentas),
-      safeCSV(p.description),
-      boolOut(p.enabled !== false),
-      boolOut(!!p.showInSales),
-      boolOut(!!p.showInPurchases),
-    ]);
+      // Definición fija de columnas para export (todas)
+      const ALL_COLS = [
+        ["Id", (p) => p.id || ""],
+        ["Nombre", (p) => p.name || ""],
+        ["Tipo de Producto", (p) => p.category || ""],
+        ["Proveedor", (p) => p.provider || ""],
+        ["Código", (p) => p.sku || ""],
+        ["Stock PV1", (p) => Number(p.stockPv1 ?? 0), "int"],
+        ["Stock PV2", (p) => Number(p.stockPv2 ?? 0), "int"],
+        ["Costo", (p) => Number(p.cost ?? 0), "currency"],
+        ["IVA Compras (%)", (p) => Number(p.ivaCompras ?? 0)],
+        [
+          "Precio de Venta (contado)",
+          (p) => Number(finalPriceContado(p) ?? 0),
+          "currency",
+        ],
+        ["IVA Ventas (%)", (p) => Number(p.ivaVentas ?? 0)],
+        ["Descripción", (p) => p.description || ""],
+        ["Activo", (p) => (p.enabled !== false ? "SI" : "NO")],
+        ["Mostrar en Ventas", (p) => (p.showInSales ? "SI" : "NO")],
+        ["Mostrar en Compras", (p) => (p.showInPurchases ? "SI" : "NO")],
+      ];
 
-    const csv =
-      headers.join(",") + "\n" + rows.map((r) => r.join(",")).join("\n");
+      ws.columns = ALL_COLS.map(([header]) => ({ header, key: header }));
 
-    const blob = new Blob(["\uFEFF" + csv], {
-      type: "text/csv;charset=utf-8;",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `productos_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+      // Datos: SIEMPRE todos los items (no filtrado, no visible)
+      const data = items.map((p) => ALL_COLS.map(([, get]) => get(p)));
+      ws.addRows(data);
+
+      // Estilos header
+      const headerRow = ws.getRow(1);
+      headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      headerRow.alignment = { vertical: "middle", horizontal: "center" };
+      headerRow.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF112C3E" },
+      };
+      headerRow.height = 20;
+
+      // Bordes + formatos + auto width
+      const currencyFmt = '"$"#,##0.00;[Red]-"$"#,##0.00';
+      ws.eachRow((row, rowNumber) => {
+        row.eachCell((cell, colNumber) => {
+          // borde fino
+          cell.border = {
+            top: { style: "thin", color: { argb: "FF2A3F4F" } },
+            left: { style: "thin", color: { argb: "FF2A3F4F" } },
+            bottom: { style: "thin", color: { argb: "FF2A3F4F" } },
+            right: { style: "thin", color: { argb: "FF2A3F4F" } },
+          };
+          cell.alignment = {
+            vertical: "middle",
+            horizontal: "left",
+            wrapText: true,
+          };
+
+          const type = ALL_COLS[colNumber - 1]?.[2];
+          if (rowNumber > 1 && type === "currency") cell.numFmt = currencyFmt;
+          if (rowNumber > 1 && type === "int") cell.numFmt = "0";
+        });
+      });
+
+      // Auto width simple
+      ws.columns.forEach((col) => {
+        let max = String(col.header ?? "").length;
+        col.eachCell({ includeEmpty: true }, (cell) => {
+          const v = cell.value == null ? "" : String(cell.value);
+          max = Math.max(max, v.length);
+        });
+        col.width = Math.min(45, Math.max(12, max + 2));
+      });
+
+      ws.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: ALL_COLS.length },
+      };
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `inventario_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Excel exportado");
+    } catch (e) {
+      console.error(e);
+      toast.error("No se pudo exportar el Excel");
+    }
   }
 
   // ===== UI =====
+  // Drag-to-scroll refs/handlers para la tabla md+
+  const tableScrollRef = useRef(null);
+  const isDownRef = useRef(false);
+  const startXRef = useRef(0);
+  const startScrollRef = useRef(0);
+  const onMouseDown = (e) => {
+    const el = tableScrollRef.current;
+    if (!el) return;
+    isDownRef.current = true;
+    startXRef.current = e.clientX;
+    startScrollRef.current = el.scrollLeft;
+  };
+  const onMouseMove = (e) => {
+    const el = tableScrollRef.current;
+    if (!el || !isDownRef.current) return;
+    const dx = e.clientX - startXRef.current;
+    el.scrollLeft = startScrollRef.current - dx;
+    e.preventDefault();
+  };
+  const endDrag = () => (isDownRef.current = false);
+
   return (
-    <div className="space-y-4 overflow-x-hidden max-w-full">
+    <div className="space-y-4 overflow-x-hidden max-w-full pb-24">
       {/* Controles */}
       <div className="flex flex-col md:flex-row gap-2 md:items-center md:justify-between min-w-0">
         <div className="flex flex-wrap gap-2 items-center min-w-0">
@@ -581,6 +676,72 @@ export default function Inventario() {
               <option value={0}>Todos</option>
             </select>
           </LabelPill>
+
+          {/* Selector de columnas */}
+          <div className="relative">
+            <button
+              ref={colsBtnRef}
+              onClick={() => setShowColsPanel((v) => !v)}
+              className="px-3 py-1.5 rounded-lg text-sm bg-white/10 hover:bg-white/15"
+              title="Configurar columnas"
+            >
+              Columnas
+            </button>
+            {showColsPanel && (
+              <div
+                id="inv-cols-panel"
+                className="absolute left-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
+              >
+                <p className="text-xs text-white/60 mb-2">
+                  Mostrar/ocultar columnas
+                </p>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {[
+                    ["nombre", "Nombre"],
+                    ["codigo", "Código"],
+                    ["tipo", "Tipo"],
+                    ["proveedor", "Proveedor"],
+                    ["costo", "Costo"],
+                    ["ivaC", "IVA C."],
+                    ["precio", "Precio"],
+                    ["ivaV", "IVA V."],
+                    ["stock1", "Stock PV1"],
+                    ["stock2", "Stock PV2"],
+                    ["vtas", "Vtas"],
+                    ["cpras", "Cpras"],
+                    ["activo", "Activo"],
+                    ["acciones", "Acciones"],
+                  ].map(([key, label]) => (
+                    <label key={key} className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="accent-[#EE7203]"
+                        checked={!!cols[key]}
+                        onChange={(e) =>
+                          setCols((c) => ({ ...c, [key]: e.target.checked }))
+                        }
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center justify-end gap-2 mt-3">
+                  <button
+                    onClick={() => setCols(DEFAULT_COLS)}
+                    className="px-2 py-1 text-xs rounded-md bg-white/10 hover:bg-white/15"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    onClick={() => setShowColsPanel(false)}
+                    className="px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                  >
+                    OK
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-1.5">
@@ -598,13 +759,13 @@ export default function Inventario() {
             />
           </label>
 
-          {/* Export CSV */}
+          {/* Export ExcelJS */}
           <button
-            onClick={handleExportCSV}
-            title="Exportar resultados a CSV"
+            onClick={handleExportXLSX}
+            title="Exportar todo el inventario a Excel"
             className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
           >
-            Exportar CSV
+            Exportar Excel
           </button>
 
           <button
@@ -623,8 +784,8 @@ export default function Inventario() {
           <div className="flex items-center justify-between mb-2">
             <div className="font-medium">Importando: {imp.filename}</div>
             <div className="text-white/70">
-              {imp.processed}/{imp.total} · Creados {imp.created}{" "}
-              ·&nbsp;Actualizados {imp.updated}
+              {imp.processed}/{imp.total} · Creados {imp.created} · Actualizados{" "}
+              {imp.updated}
             </div>
           </div>
           <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
@@ -660,7 +821,6 @@ export default function Inventario() {
               className="rounded-xl border border-white/10 bg-white/5 p-3"
             >
               <div className="flex items-start justify-between gap-3">
-                {/* Título + lápiz a la izquierda */}
                 <div className="min-w-0 flex items-start gap-2">
                   <IconGhost
                     title="Editar producto"
@@ -687,7 +847,6 @@ export default function Inventario() {
                     </p>
                   </div>
                 </div>
-
                 <span
                   title={
                     p.enabled !== false
@@ -727,43 +886,77 @@ export default function Inventario() {
 
       {/* ====== TABLA (md+) ====== */}
       <div className="hidden md:block rounded-xl border border-white/10">
-        <div className="max-w-full overflow-x-auto overscroll-x-contain">
+        <div
+          ref={tableScrollRef}
+          className="max-w-full overflow-x-auto overscroll-x-contain select-none cursor-grab active:cursor-grabbing"
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseLeave={endDrag}
+          onMouseUp={endDrag}
+          style={{ WebkitOverflowScrolling: "touch" }}
+          title="Arrastrá para desplazar horizontalmente"
+        >
           <table className="w-full text-sm table-fixed">
             <thead className="bg-white/5 text-white/70">
               <tr>
-                {/* Nombre primero y sticky */}
-                <Th className="w-[220px] lg:w-[280px] sticky left-0 z-20">
-                  Nombre
-                </Th>
-                <Th className="w-[120px]">Código</Th>
-                <Th className="w-[160px] hidden lg:table-cell">Tipo</Th>
-                <Th className="w-[200px] hidden xl:table-cell">Proveedor</Th>
-                <Th className="w-[110px] text-right whitespace-nowrap">
-                  Costo
-                </Th>
-                <Th className="w-[90px] text-right whitespace-nowrap hidden lg:table-cell">
-                  IVA C.
-                </Th>
-                <Th className="w-[110px] text-right whitespace-nowrap">
-                  Precio
-                </Th>
-                <Th className="w-[90px] text-right whitespace-nowrap hidden lg:table-cell">
-                  IVA V.
-                </Th>
-                <Th className="w-[100px] text-right whitespace-nowrap">
-                  Stock PV1
-                </Th>
-                <Th className="w-[100px] text-right whitespace-nowrap">
-                  Stock PV2
-                </Th>
-                <Th className="w-[80px] text-center hidden xl:table-cell">
-                  Vtas
-                </Th>
-                <Th className="w-[80px] text-center hidden xl:table-cell">
-                  Cpras
-                </Th>
-                <Th className="w-[90px] text-center">Activo</Th>
-                <Th className="w-[140px] text-center">Acciones</Th>
+                {cols.nombre && (
+                  <Th className="w-[220px] lg:w-[280px] sticky left-0 z-20">
+                    Nombre
+                  </Th>
+                )}
+                {cols.codigo && <Th className="w-[120px]">Código</Th>}
+                {cols.tipo && (
+                  <Th className="w-[160px] hidden lg:table-cell">Tipo</Th>
+                )}
+                {cols.proveedor && (
+                  <Th className="w-[200px] hidden xl:table-cell">Proveedor</Th>
+                )}
+                {cols.costo && (
+                  <Th className="w-[110px] text-right whitespace-nowrap">
+                    Costo
+                  </Th>
+                )}
+                {cols.ivaC && (
+                  <Th className="w-[90px] text-right whitespace-nowrap hidden lg:table-cell">
+                    IVA C.
+                  </Th>
+                )}
+                {cols.precio && (
+                  <Th className="w-[110px] text-right whitespace-nowrap">
+                    Precio
+                  </Th>
+                )}
+                {cols.ivaV && (
+                  <Th className="w-[90px] text-right whitespace-nowrap hidden lg:table-cell">
+                    IVA V.
+                  </Th>
+                )}
+                {cols.stock1 && (
+                  <Th className="w-[100px] text-right whitespace-nowrap">
+                    Stock PV1
+                  </Th>
+                )}
+                {cols.stock2 && (
+                  <Th className="w-[100px] text-right whitespace-nowrap">
+                    Stock PV2
+                  </Th>
+                )}
+                {cols.vtas && (
+                  <Th className="w-[80px] text-center hidden xl:table-cell">
+                    Vtas
+                  </Th>
+                )}
+                {cols.cpras && (
+                  <Th className="w-[80px] text-center hidden xl:table-cell">
+                    Cpras
+                  </Th>
+                )}
+                {cols.activo && (
+                  <Th className="w-[90px] text-center">Activo</Th>
+                )}
+                {cols.acciones && (
+                  <Th className="w-[140px] text-center">Acciones</Th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -785,136 +978,146 @@ export default function Inventario() {
                     key={`${p.chunkDoc}_${p.id}`}
                     className="border-t border-white/5"
                   >
-                    {/* NOMBRE (sticky + icono editar a la izquierda) */}
-                    <Td className="sticky left-0 z-10" stickyBg>
-                      <div className="flex items-start gap-2 min-w-0">
-                        <IconGhost
-                          title="Editar producto"
-                          ariaLabel="Editar"
-                          onClick={() => openEdit(p)}
-                        >
-                          <FiEdit2 className="w-4 h-4" />
-                        </IconGhost>
-                        <span className="truncate" title={p.name || "-"}>
-                          {p.name || "-"}
-                        </span>
-                      </div>
-                    </Td>
-
-                    {/* CÓDIGO */}
-                    <Td className="truncate" title={fmtTitle("Código", p.sku)}>
-                      {p.sku || "-"}
-                    </Td>
-
-                    {/* TIPO */}
-                    <Td
-                      className="truncate hidden lg:table-cell"
-                      title={fmtTitle("Tipo de producto", p.category)}
-                    >
-                      {p.category || "-"}
-                    </Td>
-
-                    {/* PROVEEDOR */}
-                    <Td
-                      className="truncate hidden xl:table-cell"
-                      title={fmtTitle("Proveedor", p.provider)}
-                    >
-                      {p.provider || "-"}
-                    </Td>
-
-                    {/* COSTO */}
-                    <Td
-                      className="text-right whitespace-nowrap"
-                      title={fmtTitle("Costo", money(p.cost))}
-                    >
-                      {money(p.cost)}
-                    </Td>
-
-                    {/* IVA C. */}
-                    <Td
-                      className="text-right hidden lg:table-cell"
-                      title={fmtTitle("IVA Compras", p.ivaCompras ?? "-")}
-                    >
-                      {p.ivaCompras ?? "-"}
-                    </Td>
-
-                    {/* PRECIO */}
-                    <Td
-                      className="text-right whitespace-nowrap"
-                      title={fmtTitle(
-                        "Precio (contado)",
-                        money(finalPriceContado(p))
-                      )}
-                    >
-                      {money(finalPriceContado(p))}
-                    </Td>
-
-                    {/* IVA V. */}
-                    <Td
-                      className="text-right hidden lg:table-cell"
-                      title={fmtTitle("IVA Ventas", p.ivaVentas ?? "-")}
-                    >
-                      {p.ivaVentas ?? "-"}
-                    </Td>
-
-                    {/* STOCKS */}
-                    <Td
-                      className="text-right"
-                      title={fmtTitle("Stock PV1", p.stockPv1 ?? 0)}
-                    >
-                      {p.stockPv1 ?? 0}
-                    </Td>
-                    <Td
-                      className="text-right"
-                      title={fmtTitle("Stock PV2", p.stockPv2 ?? 0)}
-                    >
-                      {p.stockPv2 ?? 0}
-                    </Td>
-
-                    {/* FLAGS */}
-                    <Td
-                      className="text-center hidden xl:table-cell"
-                      title={
-                        !!p.showInSales
-                          ? "Se muestra en Ventas"
-                          : "Oculto en Ventas"
-                      }
-                    >
-                      <Dot ok={!!p.showInSales} />
-                    </Td>
-                    <Td
-                      className="text-center hidden xl:table-cell"
-                      title={
-                        !!p.showInPurchases
-                          ? "Se muestra en Compras"
-                          : "Oculto en Compras"
-                      }
-                    >
-                      <Dot ok={!!p.showInPurchases} />
-                    </Td>
-                    <Td
-                      className="text-center"
-                      title={
-                        p.enabled !== false
-                          ? "Producto activo"
-                          : "Producto inactivo"
-                      }
-                    >
-                      <Dot ok={p.enabled !== false} />
-                    </Td>
-
-                    {/* ACCIONES */}
-                    <Td className="text-center">
-                      <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                        <IconBtn
-                          title="Eliminar producto"
-                          onClick={() => handleDelete(p)}
-                          icon={<FiTrash2 className="w-4 h-4" />}
-                          label="Eliminar"
-                          danger
-                        />
-                      </div>
-                    </Td>
+                    {cols.nombre && (
+                      <Td className="sticky left-0 z-10" stickyBg>
+                        <div className="flex items-start gap-2 min-w-0">
+                          <IconGhost
+                            title="Editar producto"
+                            ariaLabel="Editar"
+                            onClick={() => openEdit(p)}
+                          >
+                            <FiEdit2 className="w-4 h-4" />
+                          </IconGhost>
+                          <span className="truncate" title={p.name || "-"}>
+                            {p.name || "-"}
+                          </span>
+                        </div>
+                      </Td>
+                    )}
+                    {cols.codigo && (
+                      <Td
+                        className="truncate"
+                        title={fmtTitle("Código", p.sku)}
+                      >
+                        {p.sku || "-"}
+                      </Td>
+                    )}
+                    {cols.tipo && (
+                      <Td
+                        className="truncate hidden lg:table-cell"
+                        title={fmtTitle("Tipo de producto", p.category)}
+                      >
+                        {p.category || "-"}
+                      </Td>
+                    )}
+                    {cols.proveedor && (
+                      <Td
+                        className="truncate hidden xl:table-cell"
+                        title={fmtTitle("Proveedor", p.provider)}
+                      >
+                        {p.provider || "-"}
+                      </Td>
+                    )}
+                    {cols.costo && (
+                      <Td
+                        className="text-right whitespace-nowrap"
+                        title={fmtTitle("Costo", money(p.cost))}
+                      >
+                        {money(p.cost)}
+                      </Td>
+                    )}
+                    {cols.ivaC && (
+                      <Td
+                        className="text-right hidden lg:table-cell"
+                        title={fmtTitle("IVA Compras", p.ivaCompras ?? "-")}
+                      >
+                        {p.ivaCompras ?? "-"}
+                      </Td>
+                    )}
+                    {cols.precio && (
+                      <Td
+                        className="text-right whitespace-nowrap"
+                        title={fmtTitle(
+                          "Precio (contado)",
+                          money(finalPriceContado(p))
+                        )}
+                      >
+                        {money(finalPriceContado(p))}
+                      </Td>
+                    )}
+                    {cols.ivaV && (
+                      <Td
+                        className="text-right hidden lg:table-cell"
+                        title={fmtTitle("IVA Ventas", p.ivaVentas ?? "-")}
+                      >
+                        {p.ivaVentas ?? "-"}
+                      </Td>
+                    )}
+                    {cols.stock1 && (
+                      <Td
+                        className="text-right"
+                        title={fmtTitle("Stock PV1", p.stockPv1 ?? 0)}
+                      >
+                        {p.stockPv1 ?? 0}
+                      </Td>
+                    )}
+                    {cols.stock2 && (
+                      <Td
+                        className="text-right"
+                        title={fmtTitle("Stock PV2", p.stockPv2 ?? 0)}
+                      >
+                        {p.stockPv2 ?? 0}
+                      </Td>
+                    )}
+                    {cols.vtas && (
+                      <Td
+                        className="text-center hidden xl:table-cell"
+                        title={
+                          p.showInSales
+                            ? "Se muestra en Ventas"
+                            : "Oculto en Ventas"
+                        }
+                      >
+                        <Dot ok={!!p.showInSales} />
+                      </Td>
+                    )}
+                    {cols.cpras && (
+                      <Td
+                        className="text-center hidden xl:table-cell"
+                        title={
+                          p.showInPurchases
+                            ? "Se muestra en Compras"
+                            : "Oculto en Compras"
+                        }
+                      >
+                        <Dot ok={!!p.showInPurchases} />
+                      </Td>
+                    )}
+                    {cols.activo && (
+                      <Td
+                        className="text-center"
+                        title={
+                          p.enabled !== false
+                            ? "Producto activo"
+                            : "Producto inactivo"
+                        }
+                      >
+                        <Dot ok={p.enabled !== false} />
+                      </Td>
+                    )}
+                    {cols.acciones && (
+                      <Td className="text-center">
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          <IconBtn
+                            title="Eliminar producto"
+                            onClick={() => handleDelete(p)}
+                            icon={<FiTrash2 className="w-4 h-4" />}
+                            label="Eliminar"
+                            danger
+                          />
+                        </div>
+                      </Td>
+                    )}
                   </tr>
                 ))
               )}
@@ -989,7 +1192,6 @@ export default function Inventario() {
             <form
               onSubmit={handleSave}
               onKeyDown={(e) => {
-                // evita submit con Enter accidental (lector)
                 if (e.key === "Enter") {
                   const tag = (e.target?.tagName || "").toUpperCase();
                   if (tag === "INPUT") e.preventDefault();
@@ -1252,20 +1454,23 @@ export default function Inventario() {
         .inp:focus {
           box-shadow: 0 0 0 2px rgba(238, 114, 3, 0.5);
         }
-        /* Evita overflow por palabras largas */
+        /* Evitar overflow global: sólo la lista scrollea en X */
+        html,
+        body,
+        #__next {
+          max-width: 100%;
+          overflow-x: hidden;
+        }
         td > div,
         th,
         .break-words {
           word-break: break-word;
           overflow-wrap: anywhere;
         }
-        /* Asegurar buen fondo en celdas sticky */
         td.sticky,
         th.sticky {
           backdrop-filter: blur(2px);
         }
-
-        /* ===== Dropdowns: contener dentro del modal y con scroll ===== */
         .dropdown-panel {
           max-height: 16rem;
           overflow-y: auto;
@@ -1340,7 +1545,7 @@ function IconBtn({ onClick, icon, label, danger, title }) {
   );
 }
 
-// Icono "fantasma" (solo icono) — para el lápiz al lado del nombre
+// Icono "fantasma" — lápiz junto al nombre
 function IconGhost({ onClick, title, ariaLabel, children }) {
   return (
     <button
@@ -1407,7 +1612,7 @@ function Info({ label, value }) {
   );
 }
 
-/* --- Toggle más compacto --- */
+/* --- Toggle compacto --- */
 function TogglePill({ checked, onChange, disabled = false }) {
   return (
     <button
@@ -1435,7 +1640,7 @@ function TogglePill({ checked, onChange, disabled = false }) {
   );
 }
 
-/* ====== Selector base reutilizable (Proveedor & Tipo) ====== */
+/* ====== Selectores ====== */
 function ProviderSelect({
   value,
   onChange,
@@ -1454,7 +1659,6 @@ function ProviderSelect({
     />
   );
 }
-
 function CategorySelect({
   value,
   onChange,
@@ -1473,7 +1677,6 @@ function CategorySelect({
     />
   );
 }
-
 function BaseSelect({
   value,
   onChange,
@@ -1710,15 +1913,6 @@ const toStr = (n) => (n === 0 || n ? String(n) : "");
 const toStrInt = (n) => (n === 0 || n ? String(n) : "");
 const pad6 = (v) => String(v).replace(/\D/g, "").padStart(6, "0");
 
-const safeCSV = (s) => {
-  const str = s == null ? "" : String(s);
-  if (/[",\n]/.test(str)) return `"${str.replace(/"/g, '""')}"`;
-  return str;
-};
-const numOut = (n) =>
-  typeof n === "number" ? String(n).replace(".", ",") : "";
-const boolOut = (b) => (b ? "SI" : "NO");
-
 /* ====== aplanar docs de productos ====== */
 function flattenProducts(docs) {
   const out = [];
@@ -1790,13 +1984,17 @@ function normHeader(h) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 }
-function toBool(v) {
-  if (v === null || v === undefined) return false;
+
+// Booleans tri-estado para import: true/false si hay dato; undefined si vacío
+function toBoolOpt(v) {
+  if (v === null || v === undefined) return undefined;
   const s = String(v).trim().toLowerCase();
+  if (s === "") return undefined;
   if (["si", "sí", "true", "1"].includes(s)) return true;
   if (["no", "false", "0"].includes(s)) return false;
-  return false;
+  return undefined;
 }
+
 function toNumberFlexible(v) {
   if (v === null || v === undefined || v === "") return 0;
   const s = String(v).trim().replace(/\./g, "").replace(",", ".");
@@ -1848,9 +2046,9 @@ function mapRowToProductModel(row) {
     price: toNumberFlexible(precioVenta),
     ivaVentas: toNumberFlexible(ivaV),
     description: descripcion,
-    enabled: toBool(activo),
-    showInSales: toBool(showSales),
-    showInPurchases: toBool(showPurchases),
+    enabled: toBoolOpt(activo),
+    showInSales: toBoolOpt(showSales),
+    showInPurchases: toBoolOpt(showPurchases),
     priceDiscount: 0,
     discountActive: false,
     taxable: true,

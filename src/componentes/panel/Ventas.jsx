@@ -1,6 +1,5 @@
-// /src/componentes/ventas/Ventas.jsx
 "use client";
-import React, { useContext, useMemo, useState, useEffect } from "react";
+import React, { useContext, useMemo, useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import ContextGeneral from "@/servicios/contextGeneral";
 import {
@@ -14,6 +13,19 @@ import {
 } from "firebase/firestore";
 
 const CHUNK_SIZE = 200;
+
+// ==========================
+// Cols config (LS)
+// ==========================
+const LS_COLS = "mx.ventas.columns";
+const DEFAULT_COLS = {
+  sku: true,
+  name: true,
+  category: true,
+  price: true,
+  stock: true,
+  action: true,
+};
 
 /* =========================
  * Config pagos
@@ -30,6 +42,11 @@ const LS = {
   mode: "mx.pay.mode", // percent | fixed
   percent: "mx.pay.percent", // número %
   fixed: "mx.pay.fixed", // número $
+  // descuento
+  d_apply: "mx.disc.apply",
+  d_mode: "mx.disc.mode",
+  d_percent: "mx.disc.percent",
+  d_fixed: "mx.disc.fixed",
 };
 
 export default function Ventas({ location = "pv1" }) {
@@ -45,7 +62,7 @@ export default function Ventas({ location = "pv1" }) {
   const productosCtx = Array.isArray(ctx?.productos) ? ctx.productos : [];
   const loading = ctx?.loader === true && productosCtx.length === 0;
 
-  // Presupuestos desde Context (fetch 1 sola vez en Context)
+  // Presupuestos desde Context
   const presupuestos = Array.isArray(ctx?.presupuestos) ? ctx.presupuestos : [];
   const loadingBudgets = !!ctx?.presupuestosLoading;
   const fetchPresupuestos = ctx?.fetchPresupuestos;
@@ -54,15 +71,29 @@ export default function Ventas({ location = "pv1" }) {
   const [onlyStock, setOnlyStock] = useState(false);
   const [cart, setCart] = useState({});
 
-  /* ====== Estado de pago (persistente) ====== */
-  const [paymentMethod, setPaymentMethod] = useState("efectivo"); // transferencia | efectivo | mercadago
+  // ====== Estado de pago (persistente) ======
+  const [paymentMethod, setPaymentMethod] = useState("efectivo");
   const [applyExtra, setApplyExtra] = useState(false);
   const [extraMode, setExtraMode] = useState("percent"); // percent | fixed
-  const [extraPercent, setExtraPercent] = useState(0); // %
-  const [extraFixed, setExtraFixed] = useState(0); // $
+  const [extraPercent, setExtraPercent] = useState(0);
+  const [extraFixed, setExtraFixed] = useState(0);
+
+  // ====== Descuento (persistente) ======
+  const [applyDiscount, setApplyDiscount] = useState(false);
+  const [discountMode, setDiscountMode] = useState("percent");
+  const [discountPercent, setDiscountPercent] = useState(0);
+  const [discountFixed, setDiscountFixed] = useState(0);
 
   // ===== Filtro de presupuestos (solo UI) =====
   const [qBudgets, setQBudgets] = useState("");
+
+  // ===== Columnas visibles (LS) =====
+  const [cols, setCols] = useState(DEFAULT_COLS);
+  const [showColsPanel, setShowColsPanel] = useState(false);
+  const colsBtnRef = useRef(null);
+
+  // ===== Drawer Carrito
+  const [cartOpen, setCartOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -76,6 +107,22 @@ export default function Ventas({ location = "pv1" }) {
       if (md) setExtraMode(md);
       if (p !== null) setExtraPercent(Number(p) || 0);
       if (f !== null) setExtraFixed(Number(f) || 0);
+
+      const da = localStorage.getItem(LS.d_apply);
+      const dm = localStorage.getItem(LS.d_mode);
+      const dp = localStorage.getItem(LS.d_percent);
+      const df = localStorage.getItem(LS.d_fixed);
+      if (da !== null) setApplyDiscount(da === "true");
+      if (dm) setDiscountMode(dm);
+      if (dp !== null) setDiscountPercent(Number(dp) || 0);
+      if (df !== null) setDiscountFixed(Number(df) || 0);
+    } catch {}
+    try {
+      const saved = localStorage.getItem(LS_COLS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setCols({ ...DEFAULT_COLS, ...parsed });
+      }
     } catch {}
   }, []);
   useEffect(() => {
@@ -85,8 +132,50 @@ export default function Ventas({ location = "pv1" }) {
       localStorage.setItem(LS.mode, extraMode);
       localStorage.setItem(LS.percent, String(extraPercent || 0));
       localStorage.setItem(LS.fixed, String(extraFixed || 0));
+      localStorage.setItem(LS.d_apply, String(applyDiscount));
+      localStorage.setItem(LS.d_mode, discountMode);
+      localStorage.setItem(LS.d_percent, String(discountPercent || 0));
+      localStorage.setItem(LS.d_fixed, String(discountFixed || 0));
     } catch {}
-  }, [paymentMethod, applyExtra, extraMode, extraPercent, extraFixed]);
+  }, [
+    paymentMethod,
+    applyExtra,
+    extraMode,
+    extraPercent,
+    extraFixed,
+    applyDiscount,
+    discountMode,
+    discountPercent,
+    discountFixed,
+  ]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_COLS, JSON.stringify(cols));
+    } catch {}
+  }, [cols]);
+
+  // cerrar panel de columnas al clickear afuera
+  useEffect(() => {
+    function onDocClick(e) {
+      if (!showColsPanel) return;
+      const btn = colsBtnRef.current;
+      if (btn && (btn === e.target || btn.contains(e.target))) return;
+      const panel = document.getElementById("cols-panel");
+      if (panel && panel.contains(e.target)) return;
+      setShowColsPanel(false);
+    }
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, [showColsPanel]);
+
+  // cerrar drawer con ESC
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") setCartOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   const stockField = location === "pv2" ? "stockPv2" : "stockPv1";
 
@@ -106,7 +195,7 @@ export default function Ventas({ location = "pv1" }) {
   }, [productosCtx, q, onlyStock, stockField]);
 
   // ===== Paginación =====
-  const [pageSize, setPageSize] = useState(25); // 0 = todos
+  const [pageSize, setPageSize] = useState(10); // default 10
   const [page, setPage] = useState(1);
   useEffect(() => setPage(1), [q, onlyStock, productosCtx, pageSize]);
 
@@ -126,7 +215,7 @@ export default function Ventas({ location = "pv1" }) {
   );
 
   /* =========================
-   * Totales + Recargo
+   * Totales + Recargo / Descuento
    * ========================= */
   const subtotal = useMemo(
     () =>
@@ -150,10 +239,23 @@ export default function Ventas({ location = "pv1" }) {
     return Math.max(0, Number(extraFixed) || 0);
   }, [applyExtra, extraMode, extraPercent, extraFixed, subtotal]);
 
-  const total = useMemo(
-    () => subtotal + surchargeAmount,
-    [subtotal, surchargeAmount]
-  );
+  const currentDiscValue =
+    discountMode === "percent"
+      ? Number(discountPercent) || 0
+      : Number(discountFixed) || 0;
+
+  const discountAmount = useMemo(() => {
+    if (!applyDiscount) return 0;
+    if (discountMode === "percent") {
+      return (subtotal * Math.max(0, Number(discountPercent) || 0)) / 100;
+    }
+    return Math.max(0, Number(discountFixed) || 0);
+  }, [applyDiscount, discountMode, discountPercent, discountFixed, subtotal]);
+
+  const total = useMemo(() => {
+    const t = subtotal + surchargeAmount - discountAmount;
+    return Math.max(0, t);
+  }, [subtotal, surchargeAmount, discountAmount]);
 
   /* =========================
    * Cart ops
@@ -279,7 +381,7 @@ export default function Ventas({ location = "pv1" }) {
     if (lines.length === 0) return toast.error("Agregá productos al carrito");
 
     let nombre = prompt("Nombre del presupuesto (ej: Cliente + Patente):", "");
-    if (nombre == null) return; // cancelado
+    if (nombre == null) return;
     nombre = (nombre || "").trim();
     if (!nombre) return toast.error("Ingresá un nombre para el presupuesto");
 
@@ -305,11 +407,11 @@ export default function Ventas({ location = "pv1" }) {
       totals: {
         subtotal: Number(subtotal),
         surchargeAmount: Number(surchargeAmount),
+        discountAmount: Number(discountAmount),
         total: Number(total),
         currency: "ARS",
       },
       paymentLike: {
-        // no es una venta, pero guardamos cómo se calculó
         surcharge: {
           applied: !!applyExtra,
           mode: extraMode,
@@ -319,8 +421,17 @@ export default function Ventas({ location = "pv1" }) {
               : Number(extraFixed) || 0,
           amount: Number(surchargeAmount),
         },
+        discount: {
+          applied: !!applyDiscount,
+          mode: discountMode,
+          value:
+            discountMode === "percent"
+              ? Number(discountPercent) || 0
+              : Number(discountFixed) || 0,
+          amount: Number(discountAmount),
+        },
       },
-      status: "draft", // es un presupuesto, no una venta
+      status: "draft",
     };
 
     try {
@@ -355,7 +466,6 @@ export default function Ventas({ location = "pv1" }) {
       )
       .join("");
 
-    // HTML completo con auto-print al cargar
     const html = `<!doctype html>
 <html>
 <head>
@@ -366,8 +476,8 @@ export default function Ventas({ location = "pv1" }) {
   .shell{ max-width: 900px; margin: 0 auto; padding: 24px; }
   h1{ margin:0 0 4px; font-size:22px; }
   h2{ margin:0 0 12px; font-size:14px; color:#444;}
-  table{ width:100%; border-collapse:collapse; margin-top:8px; font-size:12px;}
-  th,td{ border-bottom:1px solid #ddd; padding:8px; }
+  table{ width:100%; border-collapse:collapse; margin-top:8px; font-size:12px; table-layout: fixed;}
+  th,td{ border-bottom:1px solid #ddd; padding:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   thead th{ background:#f5f5f5; text-align:left;}
   .totals{ margin-top:12px; width:100%; }
   .totals td{ padding:6px 8px; }
@@ -392,11 +502,11 @@ export default function Ventas({ location = "pv1" }) {
     <table>
       <thead>
         <tr>
-          <th>SKU</th>
+          <th style="width:120px">SKU</th>
           <th>Producto</th>
-          <th class="right">Cant.</th>
-          <th class="right">Unit.</th>
-          <th class="right">Subtotal</th>
+          <th class="right" style="width:70px">Cant.</th>
+          <th class="right" style="width:110px">Unit.</th>
+          <th class="right" style="width:120px">Subtotal</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -414,6 +524,10 @@ export default function Ventas({ location = "pv1" }) {
         <td class="right">${fmt(b?.totals?.surchargeAmount || 0)}</td>
       </tr>
       <tr>
+        <td class="right">Descuento</td>
+        <td class="right">-${fmt(b?.totals?.discountAmount || 0)}</td>
+      </tr>
+      <tr>
         <td class="right"><strong>Total</strong></td>
         <td class="right"><strong>${fmt(b?.totals?.total || 0)}</strong></td>
       </tr>
@@ -427,18 +541,13 @@ export default function Ventas({ location = "pv1" }) {
 </html>`;
 
     try {
-      // 1) Intento abrir en una pestaña nueva con un Blob (menos probable que lo bloquee)
       const blob = new Blob([html], { type: "text/html" });
       const url = URL.createObjectURL(blob);
       const w = window.open(url, "_blank", "noopener,noreferrer");
-
       if (w && typeof w.focus === "function") {
-        // liberar la URL cuando la pestaña nueva ya tuvo tiempo de cargar
         setTimeout(() => URL.revokeObjectURL(url), 30_000);
         return;
       }
-
-      // 2) Fallback sin popups: iframe oculto que imprime
       const iframe = document.createElement("iframe");
       iframe.style.position = "fixed";
       iframe.style.right = "0";
@@ -452,7 +561,6 @@ export default function Ventas({ location = "pv1" }) {
           iframe.contentWindow?.focus();
           iframe.contentWindow?.print();
         } finally {
-          // liberar recursos y remover iframe
           setTimeout(() => {
             URL.revokeObjectURL(url);
             document.body.removeChild(iframe);
@@ -485,14 +593,12 @@ export default function Ventas({ location = "pv1" }) {
   function loadBudgetIntoCart(b) {
     const next = {};
     for (const l of b.lines || []) {
-      // busco el producto real para respetar stock y precio actual
       const p = productosCtx.find((x) => x.id === l.productId) || {
-        // fallback plano
         id: l.productId,
         name: l.name,
         sku: l.sku,
         category: l.category,
-        [stockField]: 9999, // permito cargar aunque no esté en memoria
+        [stockField]: 9999,
         price: l.unitPrice,
         priceDiscount: 0,
         discountActive: false,
@@ -543,7 +649,6 @@ export default function Ventas({ location = "pv1" }) {
         }
       );
 
-      // Update local context
       if (typeof ctx?.setProductos === "function") {
         ctx.setProductos((prev = []) =>
           prev.map((p) => {
@@ -566,7 +671,6 @@ export default function Ventas({ location = "pv1" }) {
     const lines = Object.values(cart);
     if (lines.length === 0) return toast.error("Agregá productos al carrito");
 
-    // Agrupar por chunkDoc
     const groups = {};
     for (const it of lines) {
       const cd = it.prod.chunkDoc;
@@ -621,6 +725,7 @@ export default function Ventas({ location = "pv1" }) {
         totals: {
           subtotal: Number(subtotal),
           surchargeAmount: Number(surchargeAmount),
+          discountAmount: Number(discountAmount),
           total: Number(total),
           currency: "ARS",
         },
@@ -636,6 +741,15 @@ export default function Ventas({ location = "pv1" }) {
                 ? Number(extraPercent) || 0
                 : Number(extraFixed) || 0,
             amount: Number(surchargeAmount),
+          },
+          discount: {
+            applied: !!applyDiscount,
+            mode: discountMode,
+            value:
+              discountMode === "percent"
+                ? Number(discountPercent) || 0
+                : Number(discountFixed) || 0,
+            amount: Number(discountAmount),
           },
         },
         status: "pending",
@@ -664,6 +778,7 @@ export default function Ventas({ location = "pv1" }) {
         error: (e) => e?.message || "No se pudo completar la venta",
       });
       setCart({});
+      setCartOpen(false);
     } catch (e) {
       console.error(e);
     }
@@ -691,98 +806,239 @@ export default function Ventas({ location = "pv1" }) {
     });
   }, [presupuestos, qBudgets]);
 
+  // helper para colspan según columnas visibles
+  const visibleCount =
+    (cols.sku ? 1 : 0) +
+    (cols.name ? 1 : 0) +
+    (cols.category ? 1 : 0) +
+    (cols.price ? 1 : 0) +
+    (cols.stock ? 1 : 0) +
+    (cols.action ? 1 : 0);
+
+  // ====== Drag-to-scroll refs/handlers (tabla md+)
+  const tableScrollRef = useRef(null);
+  const isDownRef = useRef(false);
+  const startXRef = useRef(0);
+  const startScrollRef = useRef(0);
+
+  const onMouseDown = (e) => {
+    const el = tableScrollRef.current;
+    if (!el) return;
+    isDownRef.current = true;
+    startXRef.current = e.clientX;
+    startScrollRef.current = el.scrollLeft;
+  };
+  const onMouseMove = (e) => {
+    const el = tableScrollRef.current;
+    if (!el || !isDownRef.current) return;
+    const dx = e.clientX - startXRef.current;
+    el.scrollLeft = startScrollRef.current - dx;
+    e.preventDefault();
+  };
+  const endDrag = () => {
+    isDownRef.current = false;
+  };
+
+  const cartCount = Object.values(cart).length;
+  const cartTotalStr = money(total);
+
   return (
-    <div className="grid gap-6 md:grid-cols-3 overflow-x-hidden md:overflow-x-visible">
-      {/* Productos */}
-      <div className="md:col-span-2 w-full overflow-x-hidden md:overflow-visible">
-        <div className="mb-3 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
+    <div className="relative pb-20">
+      {/* Controles + Tabla: ocupa todo el ancho */}
+      <div className="mb-3 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Buscar producto por nombre / SKU / categoría…"
+          className="w-full sm:flex-1 rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+        />
+
+        <label className="inline-flex items-center gap-2 text-sm text-white/80">
           <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Buscar producto por nombre / SKU / categoría…"
-            className="w-full sm:flex-1 rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+            type="checkbox"
+            checked={onlyStock}
+            onChange={(e) => setOnlyStock(e.target.checked)}
+            className="accent-[#EE7203]"
           />
+          Solo con stock
+        </label>
 
-          <label className="inline-flex items-center gap-2 text-sm text-white/80">
-            <input
-              type="checkbox"
-              checked={onlyStock}
-              onChange={(e) => setOnlyStock(e.target.checked)}
-              className="accent-[#EE7203]"
-            />
-            Solo con stock
-          </label>
+        <label className="inline-flex items-center gap-2 text-sm text-white/80">
+          Ver:
+          <select
+            value={pageSize}
+            onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+            className="rounded-lg bg-[#0C212D] border border-white/10 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+            <option value={0}>Todos</option>
+          </select>
+        </label>
 
-          <label className="inline-flex items-center gap-2 text-sm text-white/80">
-            Ver:
-            <select
-              value={pageSize}
-              onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
-              className="rounded-lg bg-[#0C212D] border border-white/10 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+        {/* Selector de columnas */}
+        <div className="relative">
+          <button
+            ref={colsBtnRef}
+            onClick={() => setShowColsPanel((v) => !v)}
+            className="px-3 py-2 rounded-lg text-sm bg-white/10 hover:bg-white/15"
+            title="Configurar columnas"
+          >
+            Columnas
+          </button>
+          {showColsPanel && (
+            <div
+              id="cols-panel"
+              className="absolute right-0 mt-2 w-56 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
             >
-              <option value={10}>10</option>
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-              <option value={0}>Todos</option>
-            </select>
-          </label>
+              <p className="text-xs text-white/60 mb-2">
+                Mostrar/ocultar columnas
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                {[
+                  ["sku", "SKU"],
+                  ["name", "Nombre"],
+                  ["category", "Cat."],
+                  ["price", "Precio"],
+                  ["stock", "Stock"],
+                  ["action", "Acción"],
+                ].map(([key, label]) => (
+                  <label
+                    key={key}
+                    className="inline-flex items-center gap-2 text-white/90"
+                  >
+                    <input
+                      type="checkbox"
+                      className="accent-[#EE7203]"
+                      checked={!!cols[key]}
+                      onChange={(e) =>
+                        setCols((c) => ({ ...c, [key]: e.target.checked }))
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center justify-end gap-2 mt-3">
+                <button
+                  onClick={() => setCols(DEFAULT_COLS)}
+                  className="px-2 py-1 text-xs rounded-md bg-white/10 hover:bg-white/15"
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() => setShowColsPanel(false)}
+                  className="px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          )}
         </div>
+      </div>
 
-        {/* Tabla md+ */}
-        <div className="hidden md:block overflow-x-auto rounded-2xl border border-white/10">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-white/70">
+      {/* Tabla md+ (SIN sticky en Acción) */}
+      <div
+        ref={tableScrollRef}
+        className="hidden md:block overflow-x-auto rounded-2xl border border-white/10 select-none cursor-grab active:cursor-grabbing"
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseLeave={endDrag}
+        onMouseUp={endDrag}
+        style={{ WebkitOverflowScrolling: "touch" }}
+        title="Arrastrá para desplazarte horizontalmente"
+      >
+        <table className="w-full text-sm table-fixed">
+          <thead className="bg-white/5 text-white/70">
+            <tr>
+              {cols.sku && <Th className="w-32">SKU</Th>}
+              {cols.name && <Th>Nombre</Th>}
+              {cols.category && <Th className="w-40">Cat.</Th>}
+              {cols.price && <Th className="w-36 text-right">Precio</Th>}
+              {cols.stock && (
+                <Th className="w-44 text-right">
+                  Stock {location.toUpperCase()}
+                </Th>
+              )}
+              {cols.action && <Th className="w-40 text-right">Acción</Th>}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
               <tr>
-                <Th>SKU</Th>
-                <Th>Nombre</Th>
-                <Th>Cat.</Th>
-                <Th className="text-right">Precio</Th>
-                <Th className="text-right">Stock {location.toUpperCase()}</Th>
-                <Th className="w-40 text-center">Acción</Th>
+                <td
+                  colSpan={visibleCount}
+                  className="p-6 text-center text-white/60"
+                >
+                  Cargando…
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="p-6 text-center text-white/60">
-                    Cargando…
-                  </td>
-                </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="p-6 text-center text-white/60">
-                    Sin resultados
-                  </td>
-                </tr>
-              ) : (
-                pageItems.map((p) => {
-                  const stock = parseInt(p[stockField] ?? 0, 10);
-                  return (
-                    <tr
-                      key={`${p.chunkDoc}_${p.id}`}
-                      className="border-t border-white/5"
-                    >
-                      <Td>{p.sku || "-"}</Td>
-                      <Td className="font-medium">{p.name}</Td>
-                      <Td>{p.category || "-"}</Td>
-                      <Td className="text-right">{money(finalPrice(p))}</Td>
+            ) : filtered.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={visibleCount}
+                  className="p-6 text-center text-white/60"
+                >
+                  Sin resultados
+                </td>
+              </tr>
+            ) : (
+              pageItems.map((p) => {
+                const stock = parseInt(p[stockField] ?? 0, 10);
+                return (
+                  <tr
+                    key={`${p.chunkDoc}_${p.id}`}
+                    className="border-t border-white/5"
+                  >
+                    {cols.sku && (
+                      <Td title={p.sku || "-"} className="whitespace-nowrap">
+                        <span className="block truncate">{p.sku || "-"}</span>
+                      </Td>
+                    )}
+                    {cols.name && (
+                      <Td title={p.name || "-"} className="overflow-hidden">
+                        <span className="block truncate max-w-[32rem]">
+                          {p.name}
+                        </span>
+                      </Td>
+                    )}
+                    {cols.category && (
+                      <Td
+                        title={p.category || "-"}
+                        className="whitespace-nowrap"
+                      >
+                        <span className="block truncate">
+                          {p.category || "-"}
+                        </span>
+                      </Td>
+                    )}
+                    {cols.price && (
+                      <Td className="text-right whitespace-nowrap">
+                        {money(finalPrice(p))}
+                      </Td>
+                    )}
+                    {cols.stock && (
                       <Td className="text-right">
                         <div className="inline-flex items-center gap-2 justify-end w-full">
-                          <span>{stock}</span>
+                          <span className="whitespace-nowrap">{stock}</span>
                           {canEditStock && (
                             <button
                               onClick={() => addStockQuick(p)}
                               className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/15 text-xs"
-                              title="Ajustar stock rápido"
+                              title={`Ajustar stock: ${p.name || ""}`}
                             >
                               + stock
                             </button>
                           )}
                         </div>
                       </Td>
-                      <Td className="text-center">
-                        <div className="flex items-center justify-center gap-2">
+                    )}
+                    {cols.action && (
+                      <Td className="text-right">
+                        <div className="inline-flex items-center justify-end gap-2 w-full">
                           <button
                             onClick={() => addToCart(p)}
                             disabled={stock <= 0}
@@ -791,6 +1047,7 @@ export default function Ventas({ location = "pv1" }) {
                                 ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
                                 : "bg-white/10 text-white/50 cursor-not-allowed"
                             }`}
+                            title={`Agregar: ${p.name || ""}`}
                           >
                             Agregar
                           </button>
@@ -798,245 +1055,440 @@ export default function Ventas({ location = "pv1" }) {
                             <button
                               onClick={() => addStockQuick(p)}
                               className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
+                              title={`Ajustar stock: ${p.name || ""}`}
                             >
                               Ajustar
                             </button>
                           )}
                         </div>
                       </Td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                    )}
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
 
-        {/* Cards mobile */}
-        <div className="md:hidden space-y-2 w-full overflow-hidden">
-          {loading ? (
-            <div className="rounded-xl border border-white/10 p-3 text-white/60">
-              Cargando…
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="rounded-xl border border-white/10 p-3 text-white/60">
-              Sin resultados
-            </div>
-          ) : (
-            pageItems.map((p) => {
-              const stock = parseInt(p[stockField] ?? 0, 10);
-              return (
-                <div
-                  key={`${p.chunkDoc}_${p.id}`}
-                  className="rounded-xl border border-white/10 bg-white/5 p-3 w-full"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 break-words">
-                      <div className="text-sm font-semibold truncate">
-                        {p.name}
-                      </div>
-                      <div className="text-xs text-white/60 mt-0.5 truncate">
-                        SKU {p.sku || "-"} • {p.category || "-"}
-                      </div>
-                      <div className="text-xs text-white/70 mt-1">
-                        {money(finalPrice(p))} • Stock {stock}
-                      </div>
+      {/* Cards mobile */}
+      <div className="md:hidden space-y-2 w-full overflow-hidden">
+        {loading ? (
+          <div className="rounded-xl border border-white/10 p-3 text-white/60">
+            Cargando…
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="rounded-xl border border-white/10 p-3 text-white/60">
+            Sin resultados
+          </div>
+        ) : (
+          pageItems.map((p) => {
+            const stock = parseInt(p[stockField] ?? 0, 10);
+            return (
+              <div
+                key={`${p.chunkDoc}_${p.id}`}
+                className="rounded-xl border border-white/10 bg-white/5 p-3 w-full"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 break-words">
+                    <div
+                      className="text-sm font-semibold truncate"
+                      title={p.name}
+                    >
+                      {p.name}
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <button
-                        onClick={() => addToCart(p)}
-                        disabled={stock <= 0}
-                        className={`shrink-0 px-3 py-1.5 rounded-lg text-xs ${
-                          stock > 0
-                            ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
-                            : "bg-white/10 text-white/50 cursor-not-allowed"
-                        }`}
-                      >
-                        Agregar
-                      </button>
-                      {canEditStock && (
-                        <button
-                          onClick={() => addStockQuick(p)}
-                          className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
-                        >
-                          + stock
-                        </button>
-                      )}
+                    <div
+                      className="text-xs text-white/60 mt-0.5 truncate"
+                      title={`SKU ${p.sku || "-"} • ${p.category || "-"}`}
+                    >
+                      SKU {p.sku || "-"} • {p.category || "-"}
+                    </div>
+                    <div className="text-xs text-white/70 mt-1">
+                      {money(finalPrice(p))} • Stock {stock}
                     </div>
                   </div>
+                  <div className="flex flex-col gap-1 items-end">
+                    <button
+                      onClick={() => addToCart(p)}
+                      disabled={stock <= 0}
+                      className={`shrink-0 px-3 py-1.5 rounded-lg text-xs ${
+                        stock > 0
+                          ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                          : "bg-white/10 text-white/50 cursor-not-allowed"
+                      }`}
+                    >
+                      Agregar
+                    </button>
+                    {canEditStock && (
+                      <button
+                        onClick={() => addStockQuick(p)}
+                        className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
+                      >
+                        + stock
+                      </button>
+                    )}
+                  </div>
                 </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Footer de paginación */}
-        {!loading && filtered.length > 0 && (
-          <div className="mt-3 flex flex-col md:flex-row items-center justify-between gap-3 text-sm text-white/80">
-            <div className="w-full md:w-auto">
-              Mostrando{" "}
-              <span className="text-white">
-                {totalCount === 0 ? 0 : startIndex + 1}–{endIndex}
-              </span>{" "}
-              de <span className="text-white">{totalCount}</span> productos
-            </div>
-            {pageSize !== 0 && (
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
-                  onClick={() => setPage(1)}
-                  disabled={page <= 1}
-                >
-                  « Primero
-                </button>
-                <button
-                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                >
-                  ‹ Anterior
-                </button>
-                <span className="px-2">
-                  Página <span className="text-white">{page}</span> de{" "}
-                  <span className="text-white">{totalPages}</span>
-                </span>
-                <button
-                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page >= totalPages}
-                >
-                  Siguiente ›
-                </button>
-                <button
-                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
-                  onClick={() => setPage(totalPages)}
-                  disabled={page >= totalPages}
-                >
-                  Última »
-                </button>
               </div>
-            )}
-          </div>
+            );
+          })
         )}
       </div>
 
-      {/* Carrito / Pagos / Presupuestos */}
-      <div className="md:col-span-1 w-full overflow-x-hidden md:overflow-visible">
-        <div className="rounded-2xl border border-white/10 bg-[#0C212D]/40 p-4 md:sticky md:top-4 space-y-4">
-          <h3 className="font-semibold">Carrito</h3>
-
-          {/* MÉTODO DE PAGO */}
-          <div className="rounded-xl border border-white/10 p-3 bg-white/5">
-            <p className="text-xs text-white/70 mb-2">Medio de pago</p>
-            <select
-              value={paymentMethod}
-              onChange={(e) => setPaymentMethod(e.target.value)}
-              className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
-            >
-              {PAYMENT_METHODS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-
-            {/* RECARGO */}
-            <div className="mt-3 space-y-2">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  className="accent-[#EE7203]"
-                  checked={applyExtra}
-                  onChange={(e) => setApplyExtra(e.target.checked)}
-                />
-                Aplicar recargo
-              </label>
-
-              <div
-                className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
-                  applyExtra ? "" : "opacity-60 pointer-events-none"
-                }`}
+      {/* Footer de paginación */}
+      {!loading && filtered.length > 0 && (
+        <div className="mt-3 flex flex-col md:flex-row items-center justify-between gap-3 text-sm text-white/80">
+          <div className="w-full md:w-auto">
+            Mostrando{" "}
+            <span className="text-white">
+              {totalCount === 0 ? 0 : startIndex + 1}–{endIndex}
+            </span>{" "}
+            de <span className="text-white">{totalCount}</span> productos
+          </div>
+          {pageSize !== 0 && (
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
+                onClick={() => setPage(1)}
+                disabled={page <= 1}
               >
+                « Primero
+              </button>
+              <button
+                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+              >
+                ‹ Anterior
+              </button>
+              <span className="px-2">
+                Página <span className="text-white">{page}</span> de{" "}
+                <span className="text-white">{totalPages}</span>
+              </span>
+              <button
+                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+              >
+                Siguiente ›
+              </button>
+              <button
+                className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50"
+                onClick={() => setPage(totalPages)}
+                disabled={page >= totalPages}
+              >
+                Última »
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== Floating Cart Button (FAB) ===== */}
+      <button
+        onClick={() => setCartOpen(true)}
+        className="fixed bottom-4 right-4 z-40 px-4 py-3 rounded-2xl shadow-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] text-sm font-medium"
+        title="Abrir carrito"
+      >
+        Carrito · {cartCount} · {cartTotalStr}
+      </button>
+
+      {/* ===== Drawer Carrito ===== */}
+      {cartOpen && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-[2px] z-40"
+            onClick={() => setCartOpen(false)}
+          />
+          {/* Panel */}
+          <aside
+            className="fixed top-0 right-0 h-full w-full sm:w-[420px] z-50 bg-[#0C212D] border-l border-white/10 shadow-2xl flex flex-col"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="p-4 border-b border-white/10 flex items-center justify-between">
+              <div className="font-semibold">
+                Carrito <span className="text-white/60">({cartCount})</span>
+              </div>
+              <button
+                onClick={() => setCartOpen(false)}
+                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1 space-y-4">
+              {/* Pago / Recargo / Descuento */}
+              <div className="rounded-xl border border-white/10 p-3 bg-white/5">
+                <p className="text-xs text-white/70 mb-2">Medio de pago</p>
                 <select
-                  value={extraMode}
-                  onChange={(e) => setExtraMode(e.target.value)}
-                  className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                  value={paymentMethod}
+                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
                 >
-                  <option value="percent">% Porcentaje</option>
-                  <option value="fixed">$ Monto fijo</option>
+                  {PAYMENT_METHODS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
                 </select>
 
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={currentExtraValue}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (extraMode === "percent") setExtraPercent(v);
-                    else setExtraFixed(v);
-                  }}
-                  placeholder={
-                    extraMode === "percent" ? "% ej: 10" : "$ ej: 500"
-                  }
-                  className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
-                />
-              </div>
-              {applyExtra && (
-                <p className="text-xs text-white/60">
-                  Recargo{" "}
-                  {extraMode === "percent"
-                    ? `${Number(extraPercent || 0)}%`
-                    : money(Number(extraFixed || 0))}
-                </p>
-              )}
-            </div>
-          </div>
+                {/* Recargo */}
+                <div className="mt-3 space-y-2">
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="accent-[#EE7203]"
+                      checked={applyExtra}
+                      onChange={(e) => setApplyExtra(e.target.checked)}
+                    />
+                    Aplicar recargo
+                  </label>
 
-          {/* Items del carrito */}
-          {Object.values(cart).length === 0 ? (
-            <p className="text-sm text-white/60">Sin productos.</p>
-          ) : (
-            <div className="space-y-3">
-              {Object.values(cart).map(({ prod, qty }) => (
-                <div
-                  key={prod.id}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate">{prod.name}</p>
-                    <p className="text-xs text-white/60">{prod.sku}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
+                  <div
+                    className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
+                      applyExtra ? "" : "opacity-60 pointer-events-none"
+                    }`}
+                  >
+                    <select
+                      value={extraMode}
+                      onChange={(e) => setExtraMode(e.target.value)}
+                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                    >
+                      <option value="percent">% Porcentaje</option>
+                      <option value="fixed">$ Monto fijo</option>
+                    </select>
+
                     <input
                       type="number"
-                      value={qty}
-                      min={1}
-                      className="w-16 inp"
-                      onChange={(e) => setQty(prod.id, e.target.value)}
+                      min="0"
+                      step="0.01"
+                      value={currentExtraValue}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (extraMode === "percent") setExtraPercent(v);
+                        else setExtraFixed(v);
+                      }}
+                      placeholder={
+                        extraMode === "percent" ? "% ej: 10" : "$ ej: 500"
+                      }
+                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
                     />
-                    <button
-                      className="px-2 py-1 rounded-lg bg-white/10"
-                      onClick={() => removeFromCart(prod.id)}
-                    >
-                      x
-                    </button>
                   </div>
-                  <div className="text-right w-24">
-                    {money(finalPrice(prod) * qty)}
-                  </div>
+                  {applyExtra && (
+                    <p className="text-xs text-white/60">
+                      Recargo{" "}
+                      {extraMode === "percent"
+                        ? `${Number(extraPercent || 0)}%`
+                        : money(Number(extraFixed || 0))}
+                    </p>
+                  )}
                 </div>
-              ))}
 
-              <div className="border-t border-white/10 pt-3 mt-3 space-y-1">
-                <Row label="Subtotal" value={money(subtotal)} />
-                <Row label="Recargo" value={money(surchargeAmount)} />
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-sm text-white/70">Total</span>
-                  <span className="font-semibold">{money(total)}</span>
+                {/* Descuento */}
+                <div className="mt-4 space-y-2">
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="accent-[#EE7203]"
+                      checked={applyDiscount}
+                      onChange={(e) => setApplyDiscount(e.target.checked)}
+                    />
+                    Aplicar descuento
+                  </label>
+
+                  <div
+                    className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
+                      applyDiscount ? "" : "opacity-60 pointer-events-none"
+                    }`}
+                  >
+                    <select
+                      value={discountMode}
+                      onChange={(e) => setDiscountMode(e.target.value)}
+                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                    >
+                      <option value="percent">% Porcentaje</option>
+                      <option value="fixed">$ Monto fijo</option>
+                    </select>
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={currentDiscValue}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (discountMode === "percent") setDiscountPercent(v);
+                        else setDiscountFixed(v);
+                      }}
+                      placeholder={
+                        discountMode === "percent" ? "% ej: 10" : "$ ej: 500"
+                      }
+                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                    />
+                  </div>
+                  {applyDiscount && (
+                    <p className="text-xs text-white/60">
+                      Descuento{" "}
+                      {discountMode === "percent"
+                        ? `${Number(discountPercent || 0)}%`
+                        : money(Number(discountFixed || 0))}
+                    </p>
+                  )}
                 </div>
               </div>
 
+              {/* Items del carrito */}
+              {Object.values(cart).length === 0 ? (
+                <p className="text-sm text-white/60">Sin productos.</p>
+              ) : (
+                <div className="space-y-3">
+                  {Object.values(cart).map(({ prod, qty }) => (
+                    <div
+                      key={prod.id}
+                      className="flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate" title={prod.name}>
+                          {prod.name}
+                        </p>
+                        <p
+                          className="text-xs text-white/60 truncate"
+                          title={prod.sku}
+                        >
+                          {prod.sku}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          value={qty}
+                          min={1}
+                          className="w-16 inp"
+                          onChange={(e) => setQty(prod.id, e.target.value)}
+                        />
+                        <button
+                          className="px-2 py-1 rounded-lg bg-white/10"
+                          onClick={() => removeFromCart(prod.id)}
+                          title="Quitar del carrito"
+                        >
+                          x
+                        </button>
+                      </div>
+                      <div className="text-right w-24 whitespace-nowrap">
+                        {money(finalPrice(prod) * qty)}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="border-t border-white/10 pt-3 mt-3 space-y-1">
+                    <Row label="Subtotal" value={money(subtotal)} />
+                    <Row label="Recargo" value={money(surchargeAmount)} />
+                    <Row
+                      label="Descuento"
+                      value={`-${money(discountAmount)}`}
+                    />
+                    <div className="flex items-center justify-between pt-1">
+                      <span className="text-sm text-white/70">Total</span>
+                      <span className="font-semibold">{money(total)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Presupuestos */}
+              <div className="pt-2 border-t border-white/10">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <h4 className="font-semibold text-sm">Presupuestos</h4>
+                  <button
+                    onClick={() =>
+                      typeof fetchPresupuestos === "function" &&
+                      fetchPresupuestos()
+                    }
+                    className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/15"
+                    title="Refrescar"
+                  >
+                    Recargar
+                  </button>
+                </div>
+                <input
+                  value={qBudgets}
+                  onChange={(e) => setQBudgets(e.target.value)}
+                  placeholder="Buscar presupuesto…"
+                  className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70 mb-2"
+                />
+                <div className="max-h-64 overflow-auto rounded-lg border border-white/10">
+                  {loadingBudgets ? (
+                    <div className="p-3 text-white/60 text-sm">Cargando…</div>
+                  ) : budgetsFiltered.length === 0 ? (
+                    <div className="p-3 text-white/60 text-sm">
+                      Sin resultados
+                    </div>
+                  ) : (
+                    budgetsFiltered.slice(0, 25).map((b) => (
+                      <div
+                        key={`${b.chunkDoc}_${b.id}`}
+                        className="px-3 py-2 text-sm border-b border-white/5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div
+                              className="font-medium truncate"
+                              title={b.name || "(sin nombre)"}
+                            >
+                              {b.name || "(sin nombre)"}
+                            </div>
+                            <div
+                              className="text-xs text-white/60 truncate"
+                              title={`${b.createdByEmail || "—"} • ${String(
+                                b.location || ""
+                              ).toUpperCase()} • ${money(
+                                b?.totals?.total || 0
+                              )}`}
+                            >
+                              {b.createdByEmail || "—"} •{" "}
+                              {String(b.location || "").toUpperCase()} •{" "}
+                              {money(b?.totals?.total || 0)}
+                            </div>
+                          </div>
+                          <div className="shrink-0 flex items-center gap-1">
+                            <button
+                              onClick={() => loadBudgetIntoCart(b)}
+                              className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
+                              title="Cargar al carrito"
+                            >
+                              Cargar
+                            </button>
+                            <button
+                              onClick={() => printBudget(b)}
+                              className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
+                              title="Imprimir / PDF"
+                            >
+                              PDF
+                            </button>
+                            <button
+                              onClick={() => deleteBudget(b)}
+                              className="px-2 py-1 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-200 text-xs"
+                              title="Eliminar"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <p className="text-[11px] text-white/50 mt-1">
+                  * Se muestran los últimos 25 resultados filtrados.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-white/10">
               <div className="grid grid-cols-1 gap-2">
                 <button
                   onClick={checkout}
@@ -1054,84 +1506,9 @@ export default function Ventas({ location = "pv1" }) {
                 </button>
               </div>
             </div>
-          )}
-
-          {/* Presupuestos guardados */}
-          <div className="pt-2 border-t border-white/10">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <h4 className="font-semibold text-sm">Presupuestos</h4>
-              <button
-                onClick={() =>
-                  typeof fetchPresupuestos === "function" && fetchPresupuestos()
-                }
-                className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/15"
-                title="Refrescar"
-              >
-                Recargar
-              </button>
-            </div>
-            <input
-              value={qBudgets}
-              onChange={(e) => setQBudgets(e.target.value)}
-              placeholder="Buscar presupuesto…"
-              className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70 mb-2"
-            />
-            <div className="max-h-64 overflow-auto rounded-lg border border-white/10">
-              {loadingBudgets ? (
-                <div className="p-3 text-white/60 text-sm">Cargando…</div>
-              ) : budgetsFiltered.length === 0 ? (
-                <div className="p-3 text-white/60 text-sm">Sin resultados</div>
-              ) : (
-                budgetsFiltered.slice(0, 25).map((b) => (
-                  <div
-                    key={`${b.chunkDoc}_${b.id}`}
-                    className="px-3 py-2 text-sm border-b border-white/5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-medium truncate">
-                          {b.name || "(sin nombre)"}
-                        </div>
-                        <div className="text-xs text-white/60 truncate">
-                          {b.createdByEmail || "—"} •{" "}
-                          {String(b.location || "").toUpperCase()} •{" "}
-                          {money(b?.totals?.total || 0)}
-                        </div>
-                      </div>
-                      <div className="shrink-0 flex items-center gap-1">
-                        <button
-                          onClick={() => loadBudgetIntoCart(b)}
-                          className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
-                          title="Cargar al carrito"
-                        >
-                          Cargar
-                        </button>
-                        <button
-                          onClick={() => printBudget(b)}
-                          className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
-                          title="Imprimir / PDF"
-                        >
-                          PDF
-                        </button>
-                        <button
-                          onClick={() => deleteBudget(b)}
-                          className="px-2 py-1 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-200 text-xs"
-                          title="Eliminar"
-                        >
-                          Eliminar
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-            <p className="text-[11px] text-white/50 mt-1">
-              * Se muestran los últimos 25 resultados filtrados.
-            </p>
-          </div>
-        </div>
-      </div>
+          </aside>
+        </>
+      )}
 
       <style jsx global>{`
         .inp {
@@ -1158,10 +1535,29 @@ export default function Ventas({ location = "pv1" }) {
 
 /* helpers UI */
 function Th({ children, className = "" }) {
-  return <th className={`px-3 py-2 text-left ${className}`}>{children}</th>;
+  return (
+    <th
+      className={`px-3 py-2 text-left ${className}`}
+      style={{
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      {children}
+    </th>
+  );
 }
-function Td({ children, className = "" }) {
-  return <td className={`px-3 py-2 ${className}`}>{children}</td>;
+function Td({ children, className = "", title }) {
+  return (
+    <td
+      title={title}
+      className={`px-3 py-2 ${className}`}
+      style={{ overflow: "hidden", textOverflow: "ellipsis" }}
+    >
+      {children}
+    </td>
+  );
 }
 function Row({ label, value }) {
   return (
