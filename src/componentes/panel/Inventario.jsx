@@ -9,12 +9,12 @@ import {
   updateDoc,
   serverTimestamp,
   deleteField,
-  runTransaction, // ⬅️ importante
-  getDoc, // (usado en helpers)
+  runTransaction,
+  getDoc,
 } from "firebase/firestore";
 import { FiEdit2, FiTrash2 } from "react-icons/fi";
 
-const CHUNK_LIMIT = 200; // capacidad por documento
+const CHUNK_LIMIT = 200;
 
 // === Columnas (persistencia) ===
 const LS_COLS = "mx.inv.columns";
@@ -40,8 +40,8 @@ export default function Inventario() {
   const firestore = ctx?.firestore;
 
   // ===== Wire con el Context =====
-  const docsSnap = ctx?.productosDocs ?? ctx?.productDocs ?? []; // [{id, data}]
-  const itemsCtx = ctx?.productos ?? ctx?.products ?? []; // productos aplanados
+  const docsSnap = ctx?.productosDocs ?? ctx?.productDocs ?? [];
+  const itemsCtx = ctx?.productos ?? ctx?.products ?? [];
   const loading = ctx?.productosLoading ?? ctx?.productsLoading ?? false;
 
   const items = useMemo(() => {
@@ -116,40 +116,24 @@ export default function Inventario() {
   // refs de inputs
   const skuInputRef = useRef(null);
 
-  // ===== Scanner de código de barras (robusto) =====
+  // ===== Scanner de código de barras =====
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
   useEffect(() => {
     if (!open) return;
-
     function onKeyDown(e) {
       try {
         const key = typeof e.key === "string" ? e.key : "";
-
-        if (
-          !key ||
-          key === "Shift" ||
-          key === "Tab" ||
-          key === "Alt" ||
-          key === "Meta" ||
-          key === "Control"
-        )
+        if (!key || ["Shift", "Tab", "Alt", "Meta", "Control"].includes(key))
           return;
-
         const now =
           typeof performance !== "undefined" && performance.now
             ? performance.now()
             : Date.now();
-
-        if (now - (lastKeyTimeRef.current || 0) > 50) {
+        if (now - (lastKeyTimeRef.current || 0) > 50)
           scanBufferRef.current = "";
-        }
         lastKeyTimeRef.current = now;
-
-        if (key.length === 1) {
-          scanBufferRef.current += key;
-        }
-
+        if (key.length === 1) scanBufferRef.current += key;
         if (key === "Enter") {
           const code = (scanBufferRef.current || "").trim();
           if (code.length >= 3) {
@@ -160,12 +144,10 @@ export default function Inventario() {
           }
           scanBufferRef.current = "";
         }
-      } catch (err) {
-        console.warn("[scanner] Ignorado:", err);
+      } catch {
         scanBufferRef.current = "";
       }
     }
-
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
@@ -181,7 +163,7 @@ export default function Inventario() {
     error: "",
   });
 
-  // ====== ID incremental local para creaciones consecutivas ======
+  // ====== ID incremental local ======
   const nextLocalIdRef = useRef(null);
   useEffect(() => {
     const max = computeMaxId(items, docsSnap);
@@ -196,7 +178,7 @@ export default function Inventario() {
     return id;
   }
 
-  // ====== ID random único (sin colisiones, con verificación en TX) ======
+  // ====== ID random único local ======
   const sessionIdsRef = useRef(new Set());
   function randomIdRaw() {
     try {
@@ -211,7 +193,6 @@ export default function Inventario() {
     return Math.random().toString(36).slice(2, 12).toUpperCase();
   }
   function getRandomUniqueIdLocal() {
-    // Evita repetir en la sesión actual incluso si el contexto aún no refrescó
     const used = new Set(items.map((p) => String(p.id || "")));
     for (const id of sessionIdsRef.current) used.add(id);
     let id = randomIdRaw();
@@ -232,27 +213,23 @@ export default function Inventario() {
           p.category?.toLowerCase().includes(t) ||
           p.provider?.toLowerCase?.().includes(t) ||
           p.description?.toLowerCase?.().includes(t);
-
         const activeOk = !onlyActive || p.enabled !== false;
         const withStockOk =
           !onlyWithStock ||
           Number.parseInt(p?.stockPv1 ?? 0, 10) > 0 ||
           Number.parseInt(p?.stockPv2 ?? 0, 10) > 0;
-
         const lowOk =
           !onlyLow ||
           Number.parseInt(p?.stockPv1 ?? 0, 10) <= Number(lowThreshold || 0) ||
           Number.parseInt(p?.stockPv2 ?? 0, 10) <= Number(lowThreshold || 0);
-
         return inText && activeOk && withStockOk && lowOk;
       })
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
   }, [items, qtext, onlyActive, onlyWithStock, onlyLow, lowThreshold]);
 
   // ====== Paginación ======
-  const [pageSize, setPageSize] = useState(25); // 0 = todos
+  const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
-
   useEffect(
     () => setPage(1),
     [qtext, onlyActive, onlyWithStock, onlyLow, lowThreshold, items, pageSize]
@@ -261,7 +238,6 @@ export default function Inventario() {
   const total = filtered.length;
   const totalPages =
     pageSize === 0 ? 1 : Math.max(1, Math.ceil(total / pageSize));
-
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [totalPages, page]);
@@ -307,39 +283,26 @@ export default function Inventario() {
     setOpen(true);
   }
 
-  // ======== CREAR con TX: id random + chunk con espacio ===============
+  // ======== CREAR con TX ===========
   async function createProductWithUniqueIdTx(payload) {
-    // Estrategia:
-    // 1) Buscar un chunk con espacio real hasta CHUNK_LIMIT.
-    // 2) Generar ID random y verificar que el campo p_{id} no exista en ese chunk.
-    // 3) Si existe, regenero ID y reintento (en la misma TX).
-    // 4) Si el chunk está lleno, paso al siguiente "NNN".
     if (!firestore) throw new Error("Firestore no disponible");
-
-    // Prefiero empezar por un chunk existente con espacio si lo hay.
     const orderedExistingIds =
       (docsSnap || []).map((d) => d.id).sort((a, b) => a.localeCompare(b)) ||
       [];
-
-    // Helper para generar próximo nombre de chunk a partir de un índice numérico
     const chunkIdFromIndex = (idx) => String(idx + 1).padStart(3, "0");
 
     await runTransaction(firestore, async (tx) => {
-      // Paso A: construir lista de candidatos (existentes + uno nuevo al final)
       const candidates = [...orderedExistingIds];
-      // Agrego como candidato también el siguiente nuevo por las dudas
       candidates.push(chunkIdFromIndex(candidates.length));
 
       let chosenDocId = null;
       let chosenData = null;
 
-      // Paso B: encontrar un chunk con espacio
       for (let i = 0; i < candidates.length; i++) {
         const candidateId = candidates[i];
         const ref = doc(firestore, "productos", candidateId);
         let snap = await tx.get(ref);
         if (!snap.exists()) {
-          // si no existe, lo creo vacío en la tx
           tx.set(ref, {});
           snap = await tx.get(ref);
         }
@@ -352,7 +315,6 @@ export default function Inventario() {
           chosenData = data;
           break;
         }
-        // si llego al último y está lleno, agrego uno más y lo uso
         if (i === candidates.length - 1) {
           const newId = chunkIdFromIndex(candidates.length);
           const newRef = doc(firestore, "productos", newId);
@@ -365,8 +327,6 @@ export default function Inventario() {
 
       if (!chosenDocId) throw new Error("No se pudo elegir chunk destino");
 
-      // Paso C: asegurar ID random no usado en este doc
-      // Además, evito colisiones de sesión local.
       let newId = getRandomUniqueIdLocal();
       let tries = 0;
       const MAX_TRIES = 20;
@@ -374,7 +334,6 @@ export default function Inventario() {
       while (tries < MAX_TRIES) {
         const fieldKey = `p_${newId}`;
         if (!Object.prototype.hasOwnProperty.call(chosenData, fieldKey)) {
-          // libre, escribo
           const ref = doc(firestore, "productos", chosenDocId);
           const value = {
             ...payload,
@@ -383,11 +342,9 @@ export default function Inventario() {
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           };
-          // update en TX: no pisa otros campos, sólo suma esta clave
           tx.update(ref, { [fieldKey]: value });
-          return; // listo
+          return;
         }
-        // ya existe, generar otro y reintentar
         newId = getRandomUniqueIdLocal();
         tries++;
       }
@@ -416,7 +373,6 @@ export default function Inventario() {
             },
           });
         } else {
-          // ⬇️ CREACIÓN segura con TX e ID random no repetido
           await createProductWithUniqueIdTx(payload);
         }
       };
@@ -526,12 +482,10 @@ export default function Inventario() {
       };
 
       for (const r of mapped) {
-        // 1) ID y existente (si lo hay)
         const desiredId = r.id ? pad6(r.id) : nextIdCounter();
         const existing = byId.get(desiredId);
         const fieldKey = `p_${desiredId}`;
 
-        // 2) Payload que NO pisa con vacíos del Excel
         const payload = normalizeForSave({
           ...blankProduct(),
           name: r.name || existing?.name || "",
@@ -539,22 +493,18 @@ export default function Inventario() {
           category: r.category || existing?.category || "",
           provider: r.provider || existing?.provider || "",
           description: r.description || existing?.description || "",
-
           cost: r.cost ?? existing?.cost ?? 0,
           ivaCompras: r.ivaCompras ?? existing?.ivaCompras ?? 0,
           price: r.price ?? existing?.price ?? 0,
           ivaVentas: r.ivaVentas ?? existing?.ivaVentas ?? 0,
-
           stockPv1: r.stockPv1 ?? existing?.stockPv1 ?? 0,
           stockPv2: r.stockPv2 ?? existing?.stockPv2 ?? 0,
           minStock: r.minStock ?? existing?.minStock ?? 0,
-
           enabled: r.enabled ?? existing?.enabled ?? true,
           taxable: r.taxable ?? existing?.taxable ?? true,
           showInSales: r.showInSales ?? existing?.showInSales ?? true,
           showInPurchases:
             r.showInPurchases ?? existing?.showInPurchases ?? true,
-
           priceDiscount: r.priceDiscount ?? existing?.priceDiscount ?? 0,
           discountActive: r.discountActive ?? existing?.discountActive ?? false,
         });
@@ -618,20 +568,18 @@ export default function Inventario() {
 
       setImp((s) => ({ ...s, processed, created, updated }));
       toast.success(
-        `Importación OK — Creados: ${created} · Actualizados: ${updated} · Escrituras de doc: ${docWrites}`
+        `Importación OK — Creados: ${created} · Actualizados: ${updated} · Docs escritos: ${docWrites}`
       );
     } catch (e) {
       console.error(e);
       setImp((s) => ({ ...s, error: e?.message || "Error al importar" }));
       toast.error(e?.message || "No se pudo importar el archivo");
     } finally {
-      setTimeout(() => {
-        setImp((s) => ({ ...s, running: false }));
-      }, 500);
+      setTimeout(() => setImp((s) => ({ ...s, running: false })), 500);
     }
   }
 
-  // ===== Export Excel (ExcelJS, con estilos) =====
+  // ===== Export Excel =====
   async function handleExportXLSX() {
     try {
       const ExcelJS = (await import("exceljs")).default;
@@ -661,7 +609,6 @@ export default function Inventario() {
       ];
 
       ws.columns = ALL_COLS.map(([header]) => ({ header, key: header }));
-
       const data = items.map((p) => ALL_COLS.map(([, get]) => get(p)));
       ws.addRows(data);
 
@@ -727,7 +674,7 @@ export default function Inventario() {
     }
   }
 
-  // ===== UI =====
+  // ===== UI tabla =====
   const tableScrollRef = useRef(null);
   const isDownRef = useRef(false);
   const startXRef = useRef(0);
@@ -1295,7 +1242,7 @@ export default function Inventario() {
       {open && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
           <div
-            className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h-[85vh] overflow-y-auto"
+            className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h[85vh] max-h-[85vh] overflow-y-auto"
             role="dialog"
           >
             <div className="p-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#112C3E]/95 backdrop-blur">
@@ -1332,6 +1279,7 @@ export default function Inventario() {
                   title="Nombre del producto (requerido)"
                 />
               </Field>
+
               <Field label="Código">
                 <input
                   ref={skuInputRef}
@@ -1344,6 +1292,7 @@ export default function Inventario() {
                   title="Código o SKU del producto"
                 />
               </Field>
+
               <Field label="Tipo de Producto">
                 <CategorySelect
                   value={form.category}
@@ -1361,6 +1310,7 @@ export default function Inventario() {
                   placeholder="Seleccioná o creá un proveedor"
                 />
               </Field>
+
               <Field label="Descripción">
                 <input
                   value={form.description}
@@ -1372,6 +1322,7 @@ export default function Inventario() {
                   title="Descripción del producto"
                 />
               </Field>
+
               <Field label="Costo (opcional)">
                 <input
                   type="number"
@@ -1438,7 +1389,7 @@ export default function Inventario() {
                 />
               </Field>
 
-              {/* ====== ACTIVABLES ====== */}
+              {/* ACTIVABLES */}
               <Field label="Descuento activo">
                 <div className="flex items-center gap-2">
                   <TogglePill
@@ -1516,6 +1467,7 @@ export default function Inventario() {
                   title="Stock en Punto de Venta 1"
                 />
               </Field>
+
               <Field label="Stock PV2">
                 <input
                   type="number"
@@ -1528,6 +1480,7 @@ export default function Inventario() {
                   title="Stock en Punto de Venta 2"
                 />
               </Field>
+
               <Field label="Stock mínimo (alerta)">
                 <input
                   type="number"
@@ -1797,6 +1750,7 @@ function CategorySelect({
     />
   );
 }
+
 function BaseSelect({
   value,
   onChange,
@@ -1811,32 +1765,70 @@ function BaseSelect({
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
 
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+
   const filtered = useMemo(() => {
     const t = search.trim().toLowerCase();
     if (!t) return options;
     return options.filter((o) => o.toLowerCase().includes(t));
   }, [options, search]);
 
-  function pick(val) {
-    onChange(val);
+  function hardClose() {
     setOpen(false);
     setModeCreate(false);
     setSearch("");
     setDraft("");
+    requestAnimationFrame(() => {
+      triggerRef.current?.focus?.();
+    });
   }
+
+  function pick(val) {
+    onChange(val);
+    hardClose();
+  }
+
   function handleCreate() {
     const v = (draft || "").trim();
     if (!v) return;
     pick(v);
   }
 
+  // Cerrar por click/touch afuera (pointerdown en captura)
+  useEffect(() => {
+    if (!open) return;
+    function onDocPointerDown(e) {
+      const root = rootRef.current;
+      if (!root) return;
+      if (root.contains(e.target)) return;
+      hardClose();
+    }
+    document.addEventListener("pointerdown", onDocPointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", onDocPointerDown, true);
+  }, [open]);
+
+  // Escape
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e) {
+      if (e.key === "Escape") hardClose();
+    }
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
         type="button"
+        ref={triggerRef}
         onClick={() => setOpen((o) => !o)}
         className="inp w-full flex items-center justify-between"
         title={`Seleccioná o creá — ${placeholder}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
       >
         <span className={`truncate ${value ? "" : "text-white/50"}`}>
           {value || placeholder}
@@ -1851,7 +1843,10 @@ function BaseSelect({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 inset-x-0 rounded-lg border border-white/10 bg-[#0E2533] shadow-xl dropdown-panel">
+        <div
+          className="absolute z-50 mt-1 inset-x-0 rounded-lg border border-white/10 bg-[#0E2533] shadow-xl dropdown-panel"
+          role="listbox"
+        >
           <div className="p-2 border-b border-white/10">
             {!modeCreate ? (
               <div className="flex items-center gap-2">
@@ -1870,9 +1865,12 @@ function BaseSelect({
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder={`Buscar…`}
+                  placeholder="Buscar…"
                   className="flex-1 inp !py-1.5 !text-sm"
                   title="Buscá por nombre"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && filtered[0]) pick(filtered[0]);
+                  }}
                 />
               </div>
             ) : (
@@ -1886,7 +1884,7 @@ function BaseSelect({
                   title="Escribí el nuevo nombre"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleCreate();
-                    if (e.key === "Escape") setModeCreate(false);
+                    if (e.key === "Escape") hardClose();
                   }}
                 />
                 <button
@@ -1899,7 +1897,7 @@ function BaseSelect({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setModeCreate(false)}
+                  onClick={hardClose}
                   className="px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 text-xs"
                   title="Cancelar"
                 >
@@ -1920,11 +1918,17 @@ function BaseSelect({
                   <button
                     key={opt}
                     type="button"
-                    onClick={() => pick(opt)}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pick(opt);
+                    }}
                     className={`w-full text-left px-3 py-2 text-sm hover:bg-white/10 ${
                       value === opt ? "bg-white/5" : ""
                     } dropdown-item`}
                     title={`${useTitlePrefix}${opt}`}
+                    role="option"
+                    aria-selected={value === opt}
                   >
                     {opt}
                   </button>
@@ -1937,7 +1941,10 @@ function BaseSelect({
             <div className="p-2 border-t border-white/10 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => pick("")}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick("");
+                }}
                 className="text-xs text-white/70 hover:text-white"
                 title={clearLabel}
               >
@@ -1945,7 +1952,10 @@ function BaseSelect({
               </button>
               <button
                 type="button"
-                onClick={() => setOpen(false)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  hardClose();
+                }}
                 className="text-xs bg-white/10 hover:bg-white/15 px-2 py-1 rounded-md"
                 title="Cerrar selector"
               >
@@ -2053,7 +2063,7 @@ function pickChunkDoc(docs) {
   return { id: next, isNew: true };
 }
 
-/* ====== generar id único legible (ya no se usa para crear) ====== */
+/* ====== generar id legible (legacy) ====== */
 function generateId(existingItems) {
   const nums = existingItems
     .map((p) => parseInt(String(p.id).replace(/\D/g, ""), 10))
@@ -2062,16 +2072,14 @@ function generateId(existingItems) {
   return String(next).padStart(6, "0");
 }
 
-/* ====== ID helpers para contador local ====== */
+/* ====== ID helpers ====== */
 function parseIdNum(v) {
   const n = parseInt(String(v).replace(/\D/g, ""), 10);
   return isNaN(n) ? 0 : n;
 }
 function computeMaxId(items, docsSnap) {
   let max = 0;
-  for (const it of items || []) {
-    max = Math.max(max, parseIdNum(it?.id));
-  }
+  for (const it of items || []) max = Math.max(max, parseIdNum(it?.id));
   for (const d of docsSnap || []) {
     const data = d?.data || {};
     for (const k of Object.keys(data)) {
@@ -2096,7 +2104,6 @@ function normHeader(h) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 }
-
 function toBoolOpt(v) {
   if (v === null || v === undefined) return undefined;
   const s = String(v).trim().toLowerCase();
@@ -2105,7 +2112,6 @@ function toBoolOpt(v) {
   if (["no", "false", "0"].includes(s)) return false;
   return undefined;
 }
-
 function toNumberFlexible(v) {
   if (v === null || v === undefined || v === "") return 0;
   const s = String(v).trim().replace(/\./g, "").replace(",", ".");
@@ -2123,10 +2129,8 @@ function toIntFlexible(v) {
 function safeStr(v) {
   return (v == null ? "" : String(v)).trim();
 }
-
 function mapRowToProductModel(row) {
   const get = (key) => row[key] ?? "";
-
   const id = safeStr(get("id"));
   const nombre = safeStr(get("nombre"));
   const tipoProducto = safeStr(get("tipo de producto"));
