@@ -1,10 +1,15 @@
 // /src/servicios/context.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ContextGeneral from "./contextGeneral";
 import firebaseApp from "./firebase";
 
 import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, collection, getDocs } from "firebase/firestore";
+import {
+  getFirestore,
+  collection,
+  onSnapshot,
+  getDocs, // (queda por compat, aunque ya no se usa)
+} from "firebase/firestore";
 
 function Context(props) {
   // ===== Estado base =====
@@ -17,9 +22,9 @@ function Context(props) {
   const [categorias, setCategorias] = useState([]);
   const [productos, setProductos] = useState([]); // flatten p_* de /productos
   const [ventas, setVentas] = useState([]); // flatten v_* de /ventas/001,002...
-  const [egresos, setEgresos] = useState([]);
+  const [egresos, setEgresos] = useState([]); // (sin RT por ahora)
 
-  // ===== Presupuestos (nuevo: fetch 1 sola vez desde Context) =====
+  // ===== Presupuestos =====
   const [presupuestos, setPresupuestos] = useState([]); // flatten b_* de /presupuestos/001,002...
   const [presupuestosLoading, setPresupuestosLoading] = useState(false);
 
@@ -47,136 +52,140 @@ function Context(props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ===== Fetch: Categorías =====
-  const fetchCategorias = async () => {
-    setLoader(true);
-    try {
-      const ref = collection(firestore, "categorias");
-      const snapshot = await getDocs(ref);
+  // ===== RT helpers =====
+  const unsubsRef = useRef([]);
 
-      const categoriasArray = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-
-      setCategorias(categoriasArray);
-    } catch (err) {
-      console.error("Error al traer categorías:", err);
-      setCategorias([]);
-    } finally {
-      setLoader(false);
-    }
-  };
-
-  // ===== Fetch: Productos (flatten p_*) =====
-  const fetchProductos = async () => {
-    setLoader(true);
-    try {
-      const ref = collection(firestore, "productos");
-      const snapshot = await getDocs(ref);
-
-      const prods = [];
-      snapshot.docs.forEach((docSnap) => {
-        const data = docSnap.data() || {};
-        Object.entries(data).forEach(([key, val]) => {
-          if (!key.startsWith("p_") || !val) return;
-          prods.push({
-            id: val.id || key.replace(/^p_/, ""),
-            chunkDoc: val.chunkDoc || docSnap.id,
-            ...val,
-          });
-        });
-      });
-
-      prods.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-      setProductos(prods);
-    } catch (err) {
-      console.error("Error al traer productos:", err);
-      setProductos([]);
-    } finally {
-      setLoader(false);
-    }
-  };
-
-  // ===== Fetch: Ventas (flatten v_* de /ventas/001,002...) =====
-  const fetchVentas = async () => {
-    setLoader(true);
-    try {
-      const ventasRef = collection(firestore, "ventas");
-      const querySnapshot = await getDocs(ventasRef);
-
-      const allVentas = [];
-      querySnapshot.docs.forEach((docSnapshot) => {
-        const data = docSnapshot.data() || {};
-        Object.entries(data).forEach(([key, val]) => {
-          if (!key.startsWith("v_") || !val) return;
-          const saleId = key; // ej: v_1695851112345
-          allVentas.push({
-            _id: saleId,
-            id: saleId,
-            chunkDoc: docSnapshot.id, // ej: 001, 002
-            ...val,
-          });
-        });
-      });
-
-      allVentas.sort(
-        (a, b) =>
-          toMs(b?.createdAt, b?.id || b?._id) -
-          toMs(a?.createdAt, a?.id || a?._id)
-      );
-
-      setVentas(allVentas);
-    } catch (error) {
-      console.error("Error al obtener las ventas:", error);
-      setVentas([]);
-    } finally {
-      setLoader(false);
-    }
-  };
-
-  // ===== Fetch: Presupuestos (flatten b_* de /presupuestos/001,002...) =====
-  const fetchPresupuestos = async () => {
-    if (!firestore) return;
-    setPresupuestosLoading(true);
-    try {
-      const ref = collection(firestore, "presupuestos");
-      const snapshot = await getDocs(ref);
-
-      const list = [];
-      snapshot.docs.forEach((docSnap) => {
-        const data = docSnap.data() || {};
-        Object.entries(data).forEach(([key, val]) => {
-          if (!key.startsWith("b_") || !val) return;
-          list.push({
-            id: key, // ej: b_1695851112345
-            chunkDoc: docSnap.id, // ej: 001
-            ...val,
-          });
-        });
-      });
-
-      // Más recientes primero
-      list.sort(
-        (a, b) => toMs(b?.createdAt, b?.id) - toMs(a?.createdAt, a?.id)
-      );
-
-      setPresupuestos(list);
-    } catch (e) {
-      console.error("Error al traer presupuestos:", e);
-      setPresupuestos([]);
-    } finally {
-      setPresupuestosLoading(false);
-    }
-  };
-
-  // === Traer presupuestos una sola vez al montar el Context ===
   useEffect(() => {
-    // Cuando hay firestore disponible, los cargo una vez
-    if (firestore) {
-      fetchPresupuestos();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!firestore) return;
+    // Limpio subs previas si se re-monta
+    unsubsRef.current.forEach((u) => {
+      try {
+        if (typeof u === "function") u();
+      } catch {}
+    });
+    unsubsRef.current = [];
+
+    // loader inicial mientras llegan primeras snapshots
+    setLoader(true);
+    setPresupuestosLoading(true);
+
+    // --- Categorías (colección simple) ---
+    const unsubCategorias = onSnapshot(
+      collection(firestore, "categorias"),
+      (snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setCategorias(list);
+        setLoader(false);
+      },
+      (err) => {
+        console.error("RT categorias:", err);
+        setCategorias([]);
+        setLoader(false);
+      }
+    );
+    unsubsRef.current.push(unsubCategorias);
+
+    // --- Productos (chunk docs con p_*) ---
+    const unsubProductos = onSnapshot(
+      collection(firestore, "productos"),
+      (snap) => {
+        const prods = [];
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (!k.startsWith("p_") || !v) continue;
+            prods.push({
+              id: v.id || k.replace(/^p_/, ""),
+              chunkDoc: v.chunkDoc || docSnap.id,
+              ...v,
+            });
+          }
+        });
+        prods.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        setProductos(prods);
+        setLoader(false);
+      },
+      (err) => {
+        console.error("RT productos:", err);
+        setProductos([]);
+        setLoader(false);
+      }
+    );
+    unsubsRef.current.push(unsubProductos);
+
+    // --- Ventas (chunk docs con v_*) ---
+    const unsubVentas = onSnapshot(
+      collection(firestore, "ventas"),
+      (snap) => {
+        const allVentas = [];
+        snap.docs.forEach((docSnapshot) => {
+          const data = docSnapshot.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (!k.startsWith("v_") || !v) continue;
+            const saleId = k; // ej: v_1695851112345
+            allVentas.push({
+              _id: saleId,
+              id: saleId,
+              chunkDoc: docSnapshot.id,
+              ...v,
+            });
+          }
+        });
+        allVentas.sort(
+          (a, b) =>
+            toMs(b?.createdAt, b?.id || b?._id) -
+            toMs(a?.createdAt, a?.id || a?._id)
+        );
+        setVentas(allVentas);
+        setLoader(false);
+      },
+      (err) => {
+        console.error("RT ventas:", err);
+        setVentas([]);
+        setLoader(false);
+      }
+    );
+    unsubsRef.current.push(unsubVentas);
+
+    // --- Presupuestos (chunk docs con b_*) ---
+    const unsubPresupuestos = onSnapshot(
+      collection(firestore, "presupuestos"),
+      (snap) => {
+        const list = [];
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (!k.startsWith("b_") || !v) continue;
+            list.push({
+              id: k, // ej: b_1695851112345
+              chunkDoc: docSnap.id,
+              ...v,
+            });
+          }
+        });
+        list.sort(
+          (a, b) => toMs(b?.createdAt, b?.id) - toMs(a?.createdAt, a?.id)
+        );
+        setPresupuestos(list);
+        setPresupuestosLoading(false);
+      },
+      (err) => {
+        console.error("RT presupuestos:", err);
+        setPresupuestos([]);
+        setPresupuestosLoading(false);
+      }
+    );
+    unsubsRef.current.push(unsubPresupuestos);
+
+    // Cleanup en unmount
+    return () => {
+      unsubsRef.current.forEach((u) => {
+        try {
+          if (typeof u === "function") u();
+        } catch {}
+      });
+      unsubsRef.current = [];
+    };
   }, [firestore]);
 
   // ===== Helper local =====
@@ -187,6 +196,22 @@ function Context(props) {
     const n = Number(String(idFallback || "").replace(/^\D*_/, "")); // soporta v_ / b_
     return Number.isFinite(n) ? n : 0;
   }
+
+  // ===== Compat: fetchers ahora no-op (ya estamos en RT) =====
+  const fetchCategorias = async () => {
+    console.info("[fetchCategorias] no-op: ya hay onSnapshot en tiempo real.");
+  };
+  const fetchProductos = async () => {
+    console.info("[fetchProductos] no-op: ya hay onSnapshot en tiempo real.");
+  };
+  const fetchVentas = async () => {
+    console.info("[fetchVentas] no-op: ya hay onSnapshot en tiempo real.");
+  };
+  const fetchPresupuestos = async () => {
+    console.info(
+      "[fetchPresupuestos] no-op: ya hay onSnapshot en tiempo real."
+    );
+  };
 
   // ===== Provider =====
   return (
@@ -210,8 +235,8 @@ function Context(props) {
         productos,
         ventas,
         egresos,
-        presupuestos, // <<<<<< NUEVO
-        presupuestosLoading, // <<<<<< NUEVO
+        presupuestos,
+        presupuestosLoading,
 
         // setters
         setCategorias,
@@ -220,13 +245,13 @@ function Context(props) {
         setEgresos,
         setUser,
         setPermisos,
-        setPresupuestos, // (por si querés actualizar local)
+        setPresupuestos,
 
-        // fetchers
+        // fetchers (compat)
         fetchCategorias,
         fetchProductos,
         fetchVentas,
-        fetchPresupuestos, // <<<<<< NUEVO
+        fetchPresupuestos,
       }}
     >
       {props.children}

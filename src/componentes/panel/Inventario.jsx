@@ -9,6 +9,8 @@ import {
   updateDoc,
   serverTimestamp,
   deleteField,
+  runTransaction, // ⬅️ importante
+  getDoc, // (usado en helpers)
 } from "firebase/firestore";
 import { FiEdit2, FiTrash2 } from "react-icons/fi";
 
@@ -114,39 +116,56 @@ export default function Inventario() {
   // refs de inputs
   const skuInputRef = useRef(null);
 
-  // ===== Scanner de código de barras =====
+  // ===== Scanner de código de barras (robusto) =====
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (e) => {
-      if (
-        e.key === "Shift" ||
-        e.key === "Tab" ||
-        e.key === "Alt" ||
-        e.key === "Meta" ||
-        e.key === "Control"
-      )
-        return;
-      const now = performance.now();
-      if (now - lastKeyTimeRef.current > 50) {
-        scanBufferRef.current = "";
-      }
-      lastKeyTimeRef.current = now;
-      if (e.key.length === 1) {
-        scanBufferRef.current += e.key;
-      }
-      if (e.key === "Enter") {
-        if (scanBufferRef.current.length >= 3) {
-          const code = scanBufferRef.current.trim();
-          setForm((prev) => ({ ...prev, sku: code.toUpperCase() }));
-          skuInputRef.current?.focus?.();
-          toast.success("Código leído: " + code);
-          e.preventDefault();
+
+    function onKeyDown(e) {
+      try {
+        const key = typeof e.key === "string" ? e.key : "";
+
+        if (
+          !key ||
+          key === "Shift" ||
+          key === "Tab" ||
+          key === "Alt" ||
+          key === "Meta" ||
+          key === "Control"
+        )
+          return;
+
+        const now =
+          typeof performance !== "undefined" && performance.now
+            ? performance.now()
+            : Date.now();
+
+        if (now - (lastKeyTimeRef.current || 0) > 50) {
+          scanBufferRef.current = "";
         }
+        lastKeyTimeRef.current = now;
+
+        if (key.length === 1) {
+          scanBufferRef.current += key;
+        }
+
+        if (key === "Enter") {
+          const code = (scanBufferRef.current || "").trim();
+          if (code.length >= 3) {
+            setForm((prev) => ({ ...prev, sku: code.toUpperCase() }));
+            skuInputRef.current?.focus?.();
+            toast.success("Código leído: " + code);
+            e.preventDefault?.();
+          }
+          scanBufferRef.current = "";
+        }
+      } catch (err) {
+        console.warn("[scanner] Ignorado:", err);
         scanBufferRef.current = "";
       }
-    };
+    }
+
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
@@ -161,6 +180,45 @@ export default function Inventario() {
     updated: 0,
     error: "",
   });
+
+  // ====== ID incremental local para creaciones consecutivas ======
+  const nextLocalIdRef = useRef(null);
+  useEffect(() => {
+    const max = computeMaxId(items, docsSnap);
+    if (nextLocalIdRef.current === null || nextLocalIdRef.current < max + 1) {
+      nextLocalIdRef.current = max + 1;
+    }
+  }, [items, docsSnap]);
+  function getNextLocalId() {
+    if (nextLocalIdRef.current === null) nextLocalIdRef.current = 1;
+    const id = String(nextLocalIdRef.current).padStart(6, "0");
+    nextLocalIdRef.current += 1;
+    return id;
+  }
+
+  // ====== ID random único (sin colisiones, con verificación en TX) ======
+  const sessionIdsRef = useRef(new Set());
+  function randomIdRaw() {
+    try {
+      if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+        const buf = new Uint32Array(2);
+        crypto.getRandomValues(buf);
+        return (buf[0].toString(36) + buf[1].toString(36))
+          .slice(0, 10)
+          .toUpperCase();
+      }
+    } catch {}
+    return Math.random().toString(36).slice(2, 12).toUpperCase();
+  }
+  function getRandomUniqueIdLocal() {
+    // Evita repetir en la sesión actual incluso si el contexto aún no refrescó
+    const used = new Set(items.map((p) => String(p.id || "")));
+    for (const id of sessionIdsRef.current) used.add(id);
+    let id = randomIdRaw();
+    while (used.has(id)) id = randomIdRaw();
+    sessionIdsRef.current.add(id);
+    return id;
+  }
 
   // ===== Filtro =====
   const filtered = useMemo(() => {
@@ -249,6 +307,94 @@ export default function Inventario() {
     setOpen(true);
   }
 
+  // ======== CREAR con TX: id random + chunk con espacio ===============
+  async function createProductWithUniqueIdTx(payload) {
+    // Estrategia:
+    // 1) Buscar un chunk con espacio real hasta CHUNK_LIMIT.
+    // 2) Generar ID random y verificar que el campo p_{id} no exista en ese chunk.
+    // 3) Si existe, regenero ID y reintento (en la misma TX).
+    // 4) Si el chunk está lleno, paso al siguiente "NNN".
+    if (!firestore) throw new Error("Firestore no disponible");
+
+    // Prefiero empezar por un chunk existente con espacio si lo hay.
+    const orderedExistingIds =
+      (docsSnap || []).map((d) => d.id).sort((a, b) => a.localeCompare(b)) ||
+      [];
+
+    // Helper para generar próximo nombre de chunk a partir de un índice numérico
+    const chunkIdFromIndex = (idx) => String(idx + 1).padStart(3, "0");
+
+    await runTransaction(firestore, async (tx) => {
+      // Paso A: construir lista de candidatos (existentes + uno nuevo al final)
+      const candidates = [...orderedExistingIds];
+      // Agrego como candidato también el siguiente nuevo por las dudas
+      candidates.push(chunkIdFromIndex(candidates.length));
+
+      let chosenDocId = null;
+      let chosenData = null;
+
+      // Paso B: encontrar un chunk con espacio
+      for (let i = 0; i < candidates.length; i++) {
+        const candidateId = candidates[i];
+        const ref = doc(firestore, "productos", candidateId);
+        let snap = await tx.get(ref);
+        if (!snap.exists()) {
+          // si no existe, lo creo vacío en la tx
+          tx.set(ref, {});
+          snap = await tx.get(ref);
+        }
+        const data = snap.data() || {};
+        const count = Object.keys(data).filter((k) =>
+          k.startsWith("p_")
+        ).length;
+        if (count < CHUNK_LIMIT) {
+          chosenDocId = candidateId;
+          chosenData = data;
+          break;
+        }
+        // si llego al último y está lleno, agrego uno más y lo uso
+        if (i === candidates.length - 1) {
+          const newId = chunkIdFromIndex(candidates.length);
+          const newRef = doc(firestore, "productos", newId);
+          tx.set(newRef, {});
+          chosenDocId = newId;
+          chosenData = {};
+          break;
+        }
+      }
+
+      if (!chosenDocId) throw new Error("No se pudo elegir chunk destino");
+
+      // Paso C: asegurar ID random no usado en este doc
+      // Además, evito colisiones de sesión local.
+      let newId = getRandomUniqueIdLocal();
+      let tries = 0;
+      const MAX_TRIES = 20;
+
+      while (tries < MAX_TRIES) {
+        const fieldKey = `p_${newId}`;
+        if (!Object.prototype.hasOwnProperty.call(chosenData, fieldKey)) {
+          // libre, escribo
+          const ref = doc(firestore, "productos", chosenDocId);
+          const value = {
+            ...payload,
+            id: newId,
+            chunkDoc: chosenDocId,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          // update en TX: no pisa otros campos, sólo suma esta clave
+          tx.update(ref, { [fieldKey]: value });
+          return; // listo
+        }
+        // ya existe, generar otro y reintentar
+        newId = getRandomUniqueIdLocal();
+        tries++;
+      }
+      throw new Error("No se pudo generar un ID único (reintentar).");
+    });
+  }
+
   // ===== Guardar =====
   async function handleSave(e) {
     e?.preventDefault?.();
@@ -270,18 +416,8 @@ export default function Inventario() {
             },
           });
         } else {
-          const pick = pickChunkDoc(docsSnap);
-          const newId = generateId(items);
-          const docRef = doc(firestore, "productos", pick.id);
-          const dataToWrite = {
-            ...payload,
-            id: newId,
-            chunkDoc: pick.id,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          };
-          if (pick.isNew) await setDoc(docRef, {});
-          await updateDoc(docRef, { [`p_${newId}`]: dataToWrite });
+          // ⬇️ CREACIÓN segura con TX e ID random no repetido
+          await createProductWithUniqueIdTx(payload);
         }
       };
       await toast.promise(run(), {
@@ -496,14 +632,12 @@ export default function Inventario() {
   }
 
   // ===== Export Excel (ExcelJS, con estilos) =====
-  // Exporta TODO el inventario y TODAS las columnas estándar (ignora filtros/visibilidad)
   async function handleExportXLSX() {
     try {
       const ExcelJS = (await import("exceljs")).default;
       const wb = new ExcelJS.Workbook();
       const ws = wb.addWorksheet("Inventario");
 
-      // Definición fija de columnas para export (todas)
       const ALL_COLS = [
         ["Id", (p) => p.id || ""],
         ["Nombre", (p) => p.name || ""],
@@ -528,11 +662,9 @@ export default function Inventario() {
 
       ws.columns = ALL_COLS.map(([header]) => ({ header, key: header }));
 
-      // Datos: SIEMPRE todos los items (no filtrado, no visible)
       const data = items.map((p) => ALL_COLS.map(([, get]) => get(p)));
       ws.addRows(data);
 
-      // Estilos header
       const headerRow = ws.getRow(1);
       headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
       headerRow.alignment = { vertical: "middle", horizontal: "center" };
@@ -543,11 +675,9 @@ export default function Inventario() {
       };
       headerRow.height = 20;
 
-      // Bordes + formatos + auto width
       const currencyFmt = '"$"#,##0.00;[Red]-"$"#,##0.00';
       ws.eachRow((row, rowNumber) => {
         row.eachCell((cell, colNumber) => {
-          // borde fino
           cell.border = {
             top: { style: "thin", color: { argb: "FF2A3F4F" } },
             left: { style: "thin", color: { argb: "FF2A3F4F" } },
@@ -559,14 +689,12 @@ export default function Inventario() {
             horizontal: "left",
             wrapText: true,
           };
-
           const type = ALL_COLS[colNumber - 1]?.[2];
           if (rowNumber > 1 && type === "currency") cell.numFmt = currencyFmt;
           if (rowNumber > 1 && type === "int") cell.numFmt = "0";
         });
       });
 
-      // Auto width simple
       ws.columns.forEach((col) => {
         let max = String(col.header ?? "").length;
         col.eachCell({ includeEmpty: true }, (cell) => {
@@ -600,7 +728,6 @@ export default function Inventario() {
   }
 
   // ===== UI =====
-  // Drag-to-scroll refs/handlers para la tabla md+
   const tableScrollRef = useRef(null);
   const isDownRef = useRef(false);
   const startXRef = useRef(0);
@@ -634,7 +761,6 @@ export default function Inventario() {
             className="w-full sm:w-72 md:w-80 rounded-lg bg-[#0C212D] border border-white/10 px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
           />
 
-          {/* Activables compactos */}
           <LabelPill label="Solo activos">
             <TogglePill checked={onlyActive} onChange={setOnlyActive} />
           </LabelPill>
@@ -661,7 +787,6 @@ export default function Inventario() {
             </div>
           </LabelPill>
 
-          {/* Page size selector */}
           <LabelPill label="Ver">
             <select
               value={pageSize}
@@ -679,7 +804,6 @@ export default function Inventario() {
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          {/* Import Excel */}
           <label
             title="Importá productos desde Excel/CSV"
             className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 cursor-pointer text-sm"
@@ -693,7 +817,6 @@ export default function Inventario() {
             />
           </label>
 
-          {/* Export ExcelJS */}
           <button
             onClick={handleExportXLSX}
             title="Exportar todo el inventario a Excel"
@@ -1454,7 +1577,6 @@ export default function Inventario() {
         .inp:focus {
           box-shadow: 0 0 0 2px rgba(238, 114, 3, 0.5);
         }
-        /* Evitar overflow global: sólo la lista scrollea en X */
         html,
         body,
         #__next {
@@ -1524,7 +1646,6 @@ function Td({ children, className = "", stickyBg = false }) {
   );
 }
 
-// Icono de acción con texto (para acciones secundarias)
 function IconBtn({ onClick, icon, label, danger, title }) {
   return (
     <button
@@ -1545,7 +1666,6 @@ function IconBtn({ onClick, icon, label, danger, title }) {
   );
 }
 
-// Icono "fantasma" — lápiz junto al nombre
 function IconGhost({ onClick, title, ariaLabel, children }) {
   return (
     <button
@@ -1732,7 +1852,6 @@ function BaseSelect({
 
       {open && (
         <div className="absolute z-50 mt-1 inset-x-0 rounded-lg border border-white/10 bg-[#0E2533] shadow-xl dropdown-panel">
-          {/* Header */}
           <div className="p-2 border-b border-white/10">
             {!modeCreate ? (
               <div className="flex items-center gap-2">
@@ -1790,7 +1909,6 @@ function BaseSelect({
             )}
           </div>
 
-          {/* Lista */}
           {!modeCreate && (
             <div className="py-1">
               {filtered.length === 0 ? (
@@ -1815,7 +1933,6 @@ function BaseSelect({
             </div>
           )}
 
-          {/* Footer */}
           {!modeCreate && (
             <div className="p-2 border-t border-white/10 flex items-center justify-between">
               <button
@@ -1913,7 +2030,7 @@ const toStr = (n) => (n === 0 || n ? String(n) : "");
 const toStrInt = (n) => (n === 0 || n ? String(n) : "");
 const pad6 = (v) => String(v).replace(/\D/g, "").padStart(6, "0");
 
-/* ====== aplanar docs de productos ====== */
+// ====== aplanar docs de productos ======
 function flattenProducts(docs) {
   const out = [];
   for (const d of docs) {
@@ -1926,7 +2043,7 @@ function flattenProducts(docs) {
   return out.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 }
 
-/* ====== elegir doc con espacio ====== */
+// ====== elegir doc con espacio (lectura local) ======
 function pickChunkDoc(docs) {
   for (const d of docs) {
     const count = Object.keys(d.data).filter((k) => k.startsWith("p_")).length;
@@ -1936,7 +2053,7 @@ function pickChunkDoc(docs) {
   return { id: next, isNew: true };
 }
 
-/* ====== generar id único legible ====== */
+/* ====== generar id único legible (ya no se usa para crear) ====== */
 function generateId(existingItems) {
   const nums = existingItems
     .map((p) => parseInt(String(p.id).replace(/\D/g, ""), 10))
@@ -1945,31 +2062,26 @@ function generateId(existingItems) {
   return String(next).padStart(6, "0");
 }
 
-/* ====== helpers para import ====== */
-function makeNextIdCounter(usedIds) {
-  let current = 1;
-  for (const id of usedIds) {
-    const n = parseInt(String(id).replace(/\D/g, ""), 10);
-    if (!isNaN(n) && n >= current) current = n + 1;
-  }
-  return () => {
-    while (usedIds.has(pad6(current))) current++;
-    const id = pad6(current);
-    usedIds.add(id);
-    current++;
-    return id;
-  };
+/* ====== ID helpers para contador local ====== */
+function parseIdNum(v) {
+  const n = parseInt(String(v).replace(/\D/g, ""), 10);
+  return isNaN(n) ? 0 : n;
 }
-function makeNextChunkName(existingIds) {
+function computeMaxId(items, docsSnap) {
   let max = 0;
-  for (const id of existingIds) {
-    const n = parseInt(id, 10);
-    if (!isNaN(n) && n > max) max = n;
+  for (const it of items || []) {
+    max = Math.max(max, parseIdNum(it?.id));
   }
-  return () => {
-    max = max + 1;
-    return String(max).padStart(3, "0");
-  };
+  for (const d of docsSnap || []) {
+    const data = d?.data || {};
+    for (const k of Object.keys(data)) {
+      if (!k.startsWith("p_")) continue;
+      const v = data[k];
+      const candidate = parseIdNum(v?.id || k.slice(2));
+      max = Math.max(max, candidate);
+    }
+  }
+  return max;
 }
 
 /* ===================== Helpers Excel/CSV ===================== */
@@ -1985,7 +2097,6 @@ function normHeader(h) {
     .toLowerCase();
 }
 
-// Booleans tri-estado para import: true/false si hay dato; undefined si vacío
 function toBoolOpt(v) {
   if (v === null || v === undefined) return undefined;
   const s = String(v).trim().toLowerCase();
@@ -2013,7 +2124,6 @@ function safeStr(v) {
   return (v == null ? "" : String(v)).trim();
 }
 
-/* Mapea fila Excel a modelo de producto */
 function mapRowToProductModel(row) {
   const get = (key) => row[key] ?? "";
 
@@ -2055,8 +2165,32 @@ function mapRowToProductModel(row) {
   };
 }
 
-/* ====== títulos amigables para tooltips ====== */
 function fmtTitle(label, value) {
   const v = value == null || value === "" ? "-" : String(value);
   return `${label}: ${v}`;
+}
+
+function makeNextIdCounter(used) {
+  const set = new Set(used);
+  let seq = 1;
+  return function next() {
+    let id = pad6(seq++);
+    while (set.has(id)) id = pad6(seq++);
+    set.add(id);
+    return id;
+  };
+}
+function makeNextChunkName(existingIds = []) {
+  const taken = new Set(existingIds);
+  return function next() {
+    let i = 1;
+    while (true) {
+      const id = String(i).padStart(3, "0");
+      if (!taken.has(id)) {
+        taken.add(id);
+        return id;
+      }
+      i++;
+    }
+  };
 }
