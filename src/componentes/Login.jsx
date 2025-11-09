@@ -6,12 +6,22 @@ import {
   signOut,
   sendPasswordResetEmail,
 } from "firebase/auth";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import ContextGeneral from "@/servicios/contextGeneral";
 
+// 🔧 permisos por defecto si el usuario no existe aún
+const PERMISOS_POR_DEFECTO = [1]; // Ej: PV1
+
+// 🔧 semilla opcional (solo si se crea el usuario por primera vez)
+const PERMISOS_SEMILLA = {
+  "saabtian@gmail.com": [1, 2, 3, 4],
+  "agusmeza2812@gmail.com": [1, 2, 3, 4],
+};
+
 export default function Login() {
-  const { auth, user } = useContext(ContextGeneral);
+  const { auth, firestore, user } = useContext(ContextGeneral);
   const router = useRouter();
 
   const [email, setEmail] = useState("");
@@ -19,27 +29,48 @@ export default function Login() {
   const [showPass, setShowPass] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Si ya hay sesión, redirigimos (respetando claims si están)
-  useEffect(() => {
-    if (!user) return;
-    // si tenés claims en el Context podés leerlos directo; si no, así:
-    (async () => {
-      try {
-        const token = await user.getIdTokenResult(true);
-        const role = token.claims?.role || "user";
-        const locationId = token.claims?.locationId || "pv1";
-        const orgId = token.claims?.orgId || "default";
-        // routing simple: al panel principal (ajustá si querés por rol)
-      } catch {}
-    })();
-  }, [user, router]);
+  // Crear o actualizar usuario en Firestore
+  async function ensureUserInFirestore(emailStr, firebaseUser) {
+    if (!firestore || !emailStr) return;
+    try {
+      const userRef = doc(firestore, "usuarios", emailStr);
+      const snap = await getDoc(userRef);
+
+      if (!snap.exists()) {
+        const permisosInicial =
+          PERMISOS_SEMILLA[emailStr] ?? PERMISOS_POR_DEFECTO;
+
+        await setDoc(userRef, {
+          email: emailStr,
+          uid: firebaseUser.uid,
+          displayName: firebaseUser.displayName || "",
+          photoURL: firebaseUser.photoURL || "",
+          permisos: permisosInicial, // ← array [1, 2, 3...]
+          activo: true,
+          createdAt: serverTimestamp(),
+          lastLogin: serverTimestamp(),
+        });
+        console.log("Usuario creado en Firestore:", emailStr);
+      } else {
+        await setDoc(
+          userRef,
+          {
+            lastLogin: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    } catch (err) {
+      console.error("Error ensureUserInFirestore:", err);
+    }
+  }
 
   async function handleLogin(e) {
     e.preventDefault();
-    if (!auth) return toast.error("Auth no disponible");
+    if (!auth || !firestore) return toast.error("Firebase no disponible");
     setSubmitting(true);
     try {
-      await toast.promise(
+      const cred = await toast.promise(
         signInWithEmailAndPassword(auth, email.trim(), password),
         {
           loading: "Ingresando…",
@@ -47,7 +78,9 @@ export default function Login() {
           error: "Correo o contraseña incorrectos",
         }
       );
-      // El redirect lo hace el useEffect al detectar user
+      await ensureUserInFirestore(email.trim(), cred.user);
+    } catch (err) {
+      console.error(err);
     } finally {
       setSubmitting(false);
     }
@@ -83,10 +116,8 @@ export default function Login() {
 
   return (
     <div className="min-h-screen w-full overflow-x-clip bg-[#0B1E29] relative">
-      {/* fondo con degradé suave */}
       <div
         className="pointer-events-none absolute inset-0 opacity-40"
-        aria-hidden="true"
         style={{
           background:
             "radial-gradient(60% 60% at 100% 0%, #EE720322 0%, transparent 60%), radial-gradient(50% 50% at 0% 100%, #FF381622 0%, transparent 60%)",
@@ -94,11 +125,7 @@ export default function Login() {
       />
       <div className="relative z-10 flex min-h-screen items-center justify-center p-4">
         <div className="w-full max-w-md">
-          {/* Card */}
           <div className="rounded-2xl border border-white/10 bg-[#112C3E]/80 backdrop-blur shadow-xl p-5 sm:p-6">
-            {/* Logo + título */}
-
-            {/* Estado: con sesión */}
             {hasUser ? (
               <div className="space-y-4">
                 <p className="text-center text-sm text-white/70 break-words">
@@ -119,7 +146,6 @@ export default function Login() {
                 </button>
               </div>
             ) : (
-              // Formulario de login
               <form onSubmit={handleLogin} className="space-y-3">
                 <div className="space-y-1">
                   <label htmlFor="email" className="text-xs text-white/70">
@@ -128,7 +154,6 @@ export default function Login() {
                   <input
                     id="email"
                     type="email"
-                    autoComplete="email"
                     className="inp"
                     placeholder="correo@tu-taller.com"
                     value={email}
@@ -146,9 +171,6 @@ export default function Login() {
                       type="button"
                       onClick={() => setShowPass((s) => !s)}
                       className="text-[11px] text-white/60 hover:text-white"
-                      aria-label={
-                        showPass ? "Ocultar contraseña" : "Mostrar contraseña"
-                      }
                     >
                       {showPass ? "Ocultar" : "Mostrar"}
                     </button>
@@ -156,7 +178,6 @@ export default function Login() {
                   <input
                     id="password"
                     type={showPass ? "text" : "password"}
-                    autoComplete="current-password"
                     className="inp"
                     placeholder="••••••••"
                     value={password}
@@ -189,14 +210,12 @@ export default function Login() {
             )}
           </div>
 
-          {/* Footer pequeño */}
           <div className="mt-3 text-center text-[11px] text-white/50">
             © {new Date().getFullYear()} Mecánico App
           </div>
         </div>
       </div>
 
-      {/* estilos globales para inputs coherentes con la app */}
       <style jsx global>{`
         .inp {
           width: 100%;
@@ -204,7 +223,6 @@ export default function Login() {
           background: #0c212d;
           border: 1px solid rgba(255, 255, 255, 0.1);
           padding: 0.6rem 0.75rem;
-          outline: none;
           color: white;
           font-size: 0.95rem;
         }
@@ -213,11 +231,6 @@ export default function Login() {
         }
         .inp:focus {
           box-shadow: 0 0 0 2px rgba(238, 114, 3, 0.55);
-        }
-        html,
-        body {
-          max-width: 100vw;
-          overflow-x: hidden;
         }
       `}</style>
     </div>

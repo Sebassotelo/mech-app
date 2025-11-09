@@ -1,4 +1,3 @@
-// /src/componentes/panel/Stock.jsx
 "use client";
 import React, { useContext, useMemo, useState } from "react";
 import ContextGeneral from "@/servicios/contextGeneral";
@@ -10,6 +9,11 @@ const PAGE_SIZES = [10, 25, 50, 100];
 export default function Stock({ location = "pv1" }) {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
+
+  // 🔐 Permisos
+  const permisos = Array.isArray(ctx?.permisos) ? ctx.permisos : [];
+  const isAdmin4 = permisos.includes(4);
+  const canEdit = isAdmin4;
 
   // Productos desde Context (sin lecturas aquí)
   const itemsCtx = Array.isArray(ctx?.productos) ? ctx.productos : [];
@@ -79,6 +83,10 @@ export default function Stock({ location = "pv1" }) {
   }
 
   async function saveRow(prod) {
+    if (!canEdit) {
+      toast.error("Solo el Admin General (nivel 4) puede modificar stock");
+      return;
+    }
     if (!firestore) return toast.error("Firestore no disponible");
     const d = drafts[prod.id];
     if (!d) return;
@@ -134,6 +142,10 @@ export default function Stock({ location = "pv1" }) {
   }
 
   function adjust(id, field, delta) {
+    if (!canEdit) {
+      toast.error("Solo el Admin General (nivel 4) puede modificar stock");
+      return;
+    }
     const current =
       drafts[id]?.[field] ?? items.find((p) => p.id === id)?.[field] ?? 0;
     const next = Math.max(0, parseInt(current, 10) + delta);
@@ -142,6 +154,14 @@ export default function Stock({ location = "pv1" }) {
 
   return (
     <div className="space-y-4 overflow-x-hidden max-w-full">
+      {/* Aviso permisos */}
+      {!canEdit && (
+        <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
+          Vista <b>solo lectura</b>. Solo el usuario con permiso{" "}
+          <b>4 (Admin General)</b> puede editar stock y mínimos.
+        </div>
+      )}
+
       {/* Controles */}
       <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between min-w-0">
         <div className="flex flex-wrap gap-2 items-center min-w-0">
@@ -283,7 +303,11 @@ export default function Stock({ location = "pv1" }) {
                   <div className="bg-white/5 rounded-lg p-2 border border-white/10">
                     <div className="text-[11px] text-white/60">PV1</div>
                     <div className="mt-1 flex items-center gap-1">
-                      <Btn sm onClick={() => adjust(p.id, "stockPv1", -1)}>
+                      <Btn
+                        sm
+                        onClick={() => adjust(p.id, "stockPv1", -1)}
+                        disabled={!canEdit}
+                      >
                         -
                       </Btn>
                       <input
@@ -293,13 +317,19 @@ export default function Stock({ location = "pv1" }) {
                             : String(s1)
                         }
                         onChange={(e) =>
-                          setDraft(p.id, "stockPv1", e.target.value)
+                          canEdit && setDraft(p.id, "stockPv1", e.target.value)
                         }
-                        className="inp text-right w-full"
+                        className="inp text-right w-full disabled:opacity-60"
                         type="number"
                         min={0}
+                        disabled={!canEdit}
+                        readOnly={!canEdit}
                       />
-                      <Btn sm onClick={() => adjust(p.id, "stockPv1", +1)}>
+                      <Btn
+                        sm
+                        onClick={() => adjust(p.id, "stockPv1", +1)}
+                        disabled={!canEdit}
+                      >
                         +
                       </Btn>
                     </div>
@@ -309,7 +339,11 @@ export default function Stock({ location = "pv1" }) {
                   <div className="bg-white/5 rounded-lg p-2 border border-white/10">
                     <div className="text-[11px] text-white/60">PV2</div>
                     <div className="mt-1 flex items-center gap-1">
-                      <Btn sm onClick={() => adjust(p.id, "stockPv2", -1)}>
+                      <Btn
+                        sm
+                        onClick={() => adjust(p.id, "stockPv2", -1)}
+                        disabled={!canEdit}
+                      >
                         -
                       </Btn>
                       <input
@@ -319,13 +353,19 @@ export default function Stock({ location = "pv1" }) {
                             : String(s2)
                         }
                         onChange={(e) =>
-                          setDraft(p.id, "stockPv2", e.target.value)
+                          canEdit && setDraft(p.id, "stockPv2", e.target.value)
                         }
-                        className="inp text-right w-full"
+                        className="inp text-right w-full disabled:opacity-60"
                         type="number"
                         min={0}
+                        disabled={!canEdit}
+                        readOnly={!canEdit}
                       />
-                      <Btn sm onClick={() => adjust(p.id, "stockPv2", +1)}>
+                      <Btn
+                        sm
+                        onClick={() => adjust(p.id, "stockPv2", +1)}
+                        disabled={!canEdit}
+                      >
                         +
                       </Btn>
                     </div>
@@ -341,17 +381,22 @@ export default function Stock({ location = "pv1" }) {
                           : String(minS)
                       }
                       onChange={(e) =>
-                        setDraft(p.id, "minStock", e.target.value)
+                        canEdit && setDraft(p.id, "minStock", e.target.value)
                       }
-                      className="inp text-right w-full mt-1"
+                      className="inp text-right w-full mt-1 disabled:opacity-60"
                       type="number"
                       min={0}
+                      disabled={!canEdit}
+                      readOnly={!canEdit}
                     />
                   </div>
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  <Btn onClick={() => saveRow(p)} disabled={!hasDraft(p.id)}>
+                  <Btn
+                    onClick={() => saveRow(p)}
+                    disabled={!canEdit || !hasDraft(p.id)}
+                  >
                     Guardar
                   </Btn>
                 </div>
@@ -419,7 +464,11 @@ export default function Stock({ location = "pv1" }) {
                       {/* PV1 */}
                       <Td className="text-right">
                         <div className="inline-flex items-center gap-1">
-                          <Btn sm onClick={() => adjust(p.id, "stockPv1", -1)}>
+                          <Btn
+                            sm
+                            onClick={() => adjust(p.id, "stockPv1", -1)}
+                            disabled={!canEdit}
+                          >
                             -
                           </Btn>
                           <input
@@ -429,13 +478,20 @@ export default function Stock({ location = "pv1" }) {
                                 : String(s1)
                             }
                             onChange={(e) =>
+                              canEdit &&
                               setDraft(p.id, "stockPv1", e.target.value)
                             }
-                            className="w-16 inp text-right"
+                            className="w-16 inp text-right disabled:opacity-60"
                             type="number"
                             min={0}
+                            disabled={!canEdit}
+                            readOnly={!canEdit}
                           />
-                          <Btn sm onClick={() => adjust(p.id, "stockPv1", +1)}>
+                          <Btn
+                            sm
+                            onClick={() => adjust(p.id, "stockPv1", +1)}
+                            disabled={!canEdit}
+                          >
                             +
                           </Btn>
                         </div>
@@ -444,7 +500,11 @@ export default function Stock({ location = "pv1" }) {
                       {/* PV2 */}
                       <Td className="text-right">
                         <div className="inline-flex items-center gap-1">
-                          <Btn sm onClick={() => adjust(p.id, "stockPv2", -1)}>
+                          <Btn
+                            sm
+                            onClick={() => adjust(p.id, "stockPv2", -1)}
+                            disabled={!canEdit}
+                          >
                             -
                           </Btn>
                           <input
@@ -454,13 +514,20 @@ export default function Stock({ location = "pv1" }) {
                                 : String(s2)
                             }
                             onChange={(e) =>
+                              canEdit &&
                               setDraft(p.id, "stockPv2", e.target.value)
                             }
-                            className="w-16 inp text-right"
+                            className="w-16 inp text-right disabled:opacity-60"
                             type="number"
                             min={0}
+                            disabled={!canEdit}
+                            readOnly={!canEdit}
                           />
-                          <Btn sm onClick={() => adjust(p.id, "stockPv2", +1)}>
+                          <Btn
+                            sm
+                            onClick={() => adjust(p.id, "stockPv2", +1)}
+                            disabled={!canEdit}
+                          >
                             +
                           </Btn>
                         </div>
@@ -475,11 +542,14 @@ export default function Stock({ location = "pv1" }) {
                               : String(minS)
                           }
                           onChange={(e) =>
+                            canEdit &&
                             setDraft(p.id, "minStock", e.target.value)
                           }
-                          className="w-16 inp text-right"
+                          className="w-16 inp text-right disabled:opacity-60"
                           type="number"
                           min={0}
+                          disabled={!canEdit}
+                          readOnly={!canEdit}
                         />
                       </Td>
 
@@ -487,7 +557,7 @@ export default function Stock({ location = "pv1" }) {
                         <div className="flex items-center justify-center gap-2 flex-wrap">
                           <Btn
                             onClick={() => saveRow(p)}
-                            disabled={!hasDraft(p.id)}
+                            disabled={!canEdit || !hasDraft(p.id)}
                           >
                             Guardar
                           </Btn>
@@ -540,12 +610,11 @@ export default function Stock({ location = "pv1" }) {
           border-radius: 0.75rem;
           padding: 0.4rem 0.6rem;
           outline: none;
-          min-width: 0; /* evita overflow en flex */
+          min-width: 0;
         }
         .inp:focus {
           box-shadow: 0 0 0 2px rgba(238, 114, 3, 0.6);
         }
-        /* Evita overflow por palabras/códigos largos */
         td > div,
         th,
         .break-words {

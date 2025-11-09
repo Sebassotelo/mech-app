@@ -1,4 +1,3 @@
-// /pages/dashboard/index.js
 "use client";
 import Inventario from "@/componentes/panel/Inventario";
 import Ventas from "@/componentes/panel/Ventas";
@@ -8,6 +7,7 @@ import ContextGeneral from "@/servicios/contextGeneral";
 import { toast } from "sonner";
 import HomeOverview from "@/componentes/panel/HomeOverview";
 import Stock from "@/componentes/panel/Stock";
+import Cuentas from "@/componentes/panel/Cuentas"; // ✅ solo admin(4)
 import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/router";
 
@@ -15,15 +15,35 @@ export default function Dashboard() {
   const ctx = useContext(ContextGeneral);
   const router = useRouter();
 
-  // ───────── Auth Guard (declarado ANTES de cualquier return)
+  // ───────── Auth Guard
   const [authReady, setAuthReady] = useState(false);
 
-  // ───────── Resto de hooks (también ANTES de cualquier return)
+  // ───────── Resto de hooks
   const didFetch = useRef(false);
 
+  // Estado UI
   const [location, setLocation] = useState("pv1"); // pv1 | pv2 | taller
-  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | reportes
+  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | cuentas | reportes
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // ───────── Permisos
+  const permisos = Array.isArray(ctx?.permisos) ? ctx.permisos : [];
+  const hasPV1 = permisos.includes(1);
+  const hasPV2 = permisos.includes(2);
+  const hasTaller = permisos.includes(3);
+  const isAdmin4 = permisos.includes(4);
+
+  const allowedFor = (loc) =>
+    (loc === "pv1" && hasPV1) ||
+    (loc === "pv2" && hasPV2) ||
+    (loc === "taller" && hasTaller);
+
+  const firstAllowedLocation = useMemo(() => {
+    if (hasPV1) return "pv1";
+    if (hasPV2) return "pv2";
+    if (hasTaller) return "taller";
+    return null;
+  }, [hasPV1, hasPV2, hasTaller]);
 
   // ───────── Auth effect
   useEffect(() => {
@@ -37,7 +57,7 @@ export default function Dashboard() {
 
   // ───────── Fetch inicial
   useEffect(() => {
-    if (!ctx || didFetch.current || !ctx?.user) return; // evita correr sin user
+    if (!ctx || didFetch.current || !ctx?.user) return;
     didFetch.current = true;
 
     const needCats =
@@ -69,7 +89,7 @@ export default function Dashboard() {
     }
   }, [ctx]);
 
-  // ───────── Persistencia UI
+  // ───────── Persistencia UI (respetando permisos)
   useEffect(() => {
     try {
       const a = localStorage.getItem("mx.active");
@@ -78,6 +98,15 @@ export default function Dashboard() {
       if (l) setLocation(l);
     } catch {}
   }, []);
+  // Si la sede persistida no está permitida, forzar a la primera permitida
+  useEffect(() => {
+    if (!firstAllowedLocation) return; // en teoría siempre hay al menos una
+    if (!allowedFor(location)) {
+      setLocation(firstAllowedLocation);
+      setActive(defaultActiveFor(firstAllowedLocation));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstAllowedLocation, permisos]);
   useEffect(() => {
     try {
       localStorage.setItem("mx.active", active);
@@ -89,34 +118,53 @@ export default function Dashboard() {
     } catch {}
   }, [location]);
 
-  // ───────── Nav dinámico
+  // ───────── Nav dinámico (agrega CUENTAS sólo si es admin4)
   const navItems = useMemo(() => {
-    if (location === "taller") {
-      return [{ id: "home", label: "Inicio", icon: HomeIcon }];
+    const base = [];
+    // Si no tiene permiso para la sede actual, solo muestro "Inicio"
+    if (!allowedFor(location)) {
+      base.push({ id: "home", label: "Inicio", icon: HomeIcon });
+      if (isAdmin4)
+        base.push({ id: "cuentas", label: "Cuentas", icon: BankIcon });
+      return base;
     }
-    return [
-      { id: "home", label: "Inicio", icon: HomeIcon },
-      { id: "ventas", label: "Ventas", icon: CartIcon },
-      { id: "inventario", label: "Inventario", icon: BoxIcon },
-      { id: "stock", label: "Stock", icon: StockIcon },
-      { id: "historial", label: "Historial de ventas", icon: HistoryIcon },
-    ];
-  }, [location]);
 
+    if (location === "taller") {
+      // Taller aún placeholder, pero respetamos permiso 3 para entrar
+      base.push({ id: "home", label: "Inicio", icon: HomeIcon });
+    } else {
+      base.push(
+        { id: "home", label: "Inicio", icon: HomeIcon },
+        { id: "ventas", label: "Ventas", icon: CartIcon },
+        { id: "inventario", label: "Inventario", icon: BoxIcon },
+        { id: "stock", label: "Stock", icon: StockIcon },
+        { id: "historial", label: "Historial de ventas", icon: HistoryIcon }
+      );
+    }
+    if (isAdmin4)
+      base.push({ id: "cuentas", label: "Cuentas", icon: BankIcon });
+    return base;
+  }, [location, isAdmin4, permisos]);
+
+  // Si cambia permisos o sede y la vista actual ya no es válida, reacomodo
   useEffect(() => {
     const validIds = new Set(navItems.map((n) => n.id));
     if (!validIds.has(active)) setActive(defaultActiveFor(location));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, navItems]);
 
+  // Gate de vistas: si no hay permiso para la sede, muestro AccessDenied
+  const blockedByPerm = !allowedFor(location);
   const CurrentView = useMemo(() => {
+    if (blockedByPerm) return <AccessDenied location={location} />;
     if (active === "ventas") return <VentasView location={location} />;
     if (active === "inventario") return <InventarioView location={location} />;
     if (active === "stock") return <StockView location={location} />;
     if (active === "historial") return <HistorialView location={location} />;
     if (active === "reportes") return <ReportesView location={location} />;
+    if (active === "cuentas") return <CuentasView />; // ✅ solo aparece si isAdmin4
     return <HomeView location={location} />;
-  }, [active, location]);
+  }, [active, location, blockedByPerm]);
 
   // ───────── Mobile: bloquear scroll + cerrar con ESC
   const drawerRef = useRef(null);
@@ -137,6 +185,17 @@ export default function Dashboard() {
   }, [mobileNavOpen]);
 
   const handleLocationChange = (loc) => {
+    // Bloquear cambio si no tiene permiso de esa sede
+    if (
+      !(
+        (loc === "pv1" && hasPV1) ||
+        (loc === "pv2" && hasPV2) ||
+        (loc === "taller" && hasTaller)
+      )
+    ) {
+      toast.error("No tenés permiso para esa sede");
+      return;
+    }
     if (loc === "taller") {
       toast.info("Módulo Taller: próximamente");
       setLocation("taller");
@@ -154,7 +213,7 @@ export default function Dashboard() {
     setMobileNavOpen(false);
   };
 
-  // ───────── Gates visuales (estos returns ahora son SEGUROS porque ya declaramos todos los hooks)
+  // ───────── Gates visuales
   if (!authReady) {
     return (
       <div className="min-h-screen grid place-items-center bg-[#0C212D] text-white">
@@ -165,14 +224,12 @@ export default function Dashboard() {
       </div>
     );
   }
-
-  // si authReady pero aún no hay user (por transición), no renderizamos el panel
   if (!ctx?.user) return null;
 
   // ───────── UI principal
   return (
     <div className="min-h-screen flex bg-[#0C212D] text-white overflow-x-hidden">
-      {/* ───────── Sidebar desktop ───────── */}
+      {/* Sidebar desktop */}
       <aside className="hidden md:flex w-72 xl:w-80 bg-[#112C3E]/90 backdrop-blur-md border-r border-white/10 flex-col">
         <SidebarHeader
           location={location}
@@ -184,7 +241,7 @@ export default function Dashboard() {
         </div>
       </aside>
 
-      {/* ───────── Drawer mobile ───────── */}
+      {/* Drawer mobile */}
       {mobileNavOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 md:hidden"
@@ -220,7 +277,13 @@ export default function Dashboard() {
           <p className="text-[11px] uppercase tracking-widest text-white/50 mb-2">
             Seleccioná la sede
           </p>
-          <LocationDropdown value={location} onChange={handleLocationChange} />
+          <LocationDropdown
+            value={location}
+            onChange={handleLocationChange}
+            hasPV1={hasPV1}
+            hasPV2={hasPV2}
+            hasTaller={hasTaller}
+          />
         </div>
 
         <nav className="flex-1 p-3 overflow-y-auto">
@@ -236,7 +299,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ───────── Contenido ───────── */}
+      {/* Contenido */}
       <main className="flex-1 min-w-0 overflow-x-hidden">
         {/* Topbar mobile */}
         <div className="md:hidden sticky top-0 z-30 bg-[#0C212D]/95 backdrop-blur border-b border-white/10">
@@ -256,9 +319,7 @@ export default function Dashboard() {
                 {subtitleFor(active, location)}
               </p>
             </div>
-            <span
-              className={`inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-xl bg-white/5 ring-1 ring-white/10`}
-            >
+            <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-xl bg-white/5 ring-1 ring-white/10">
               <Dot className={dotColor(location)} />
               {location === "pv1"
                 ? "PV1"
@@ -269,7 +330,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Contenedor limitado y centrado */}
+        {/* Contenedor limitado */}
         <div className="mx-auto w-full max-w-screen-xl px-4 sm:px-6 py-6">
           {/* Encabezado desktop */}
           <div className="hidden md:flex items-start sm:items-center justify-between mb-6 gap-3">
@@ -317,7 +378,7 @@ export default function Dashboard() {
   );
 }
 
-/* ───────── Sidebar Header reutilizable ───────── */
+/* ───────── Sidebar Header ───────── */
 function SidebarHeader({ location, onChangeLocation }) {
   return (
     <div className="p-5 border-b border-white/10">
@@ -333,7 +394,26 @@ function SidebarHeader({ location, onChangeLocation }) {
   );
 }
 
-/* ───────── Listado de navegación (desktop + mobile) ───────── */
+/* ───────── AccessDenied ───────── */
+function AccessDenied({ location }) {
+  const label =
+    location === "pv1"
+      ? "Punto de Venta 1"
+      : location === "pv2"
+      ? "Punto de Venta 2"
+      : "Taller";
+  return (
+    <div className="rounded-xl border border-white/10 p-6 bg-white/5">
+      <h3 className="text-lg font-semibold">Acceso restringido</h3>
+      <p className="text-sm text-white/70 mt-1">
+        No tenés permisos para operar en <b>{label}</b>. Cambiá de sede o pedí
+        acceso al admin.
+      </p>
+    </div>
+  );
+}
+
+/* ───────── Listado de navegación ───────── */
 function NavList({ navItems, active, onClickItem }) {
   return (
     <ul className="space-y-2">
@@ -370,8 +450,8 @@ function NavList({ navItems, active, onClickItem }) {
   );
 }
 
-/* ───────── Dropdown de sede con click-outside ───────── */
-function LocationDropdown({ value, onChange }) {
+/* ───────── Dropdown de sede ───────── */
+function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -396,6 +476,44 @@ function LocationDropdown({ value, onChange }) {
       : value === "pv2"
       ? "ring-[#FF3816]/60"
       : "ring-emerald-400/60";
+
+  const Option = ({ id, allowed, label, desc, grad, icon: IconEl }) => (
+    <li>
+      <button
+        role="option"
+        aria-selected={value === id}
+        disabled={!allowed}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (allowed) {
+            onChange(id);
+            setOpen(false);
+          }
+        }}
+        className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left ${
+          !allowed ? "opacity-50 cursor-not-allowed" : "hover:bg-white/5"
+        } ${value === id ? "bg-white/5" : ""}`}
+      >
+        <span
+          className={`h-8 w-8 rounded-lg ring-1 ring-white/10 bg-gradient-to-br ${grad} flex items-center justify-center`}
+        >
+          <IconEl className="h-4 w-4" />
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold truncate">{label}</span>
+            {!allowed && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 ring-1 ring-white/10">
+                Sin permiso
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-white/60">{desc}</p>
+        </div>
+        {value === id ? <CheckIcon className="h-4 w-4 text-white/80" /> : null}
+      </button>
+    </li>
+  );
 
   return (
     <div className="relative" ref={ref}>
@@ -425,84 +543,33 @@ function LocationDropdown({ value, onChange }) {
           role="listbox"
           className="absolute z-20 mt-2 w-full rounded-xl overflow-hidden border border-white/10 bg-[#0E2330] shadow-2xl"
         >
-          <LocationOption
+          <Option
             id="pv1"
-            active={value === "pv1"}
+            allowed={!!hasPV1}
             label="Punto de Venta 1"
             desc="Ventas, inventario y stock."
-            onSelect={() => {
-              onChange("pv1");
-              setOpen(false);
-            }}
             grad="from-[#EE7203]/80 to-[#FF3816]/80"
+            icon={CartIcon}
           />
-          <LocationOption
+          <Option
             id="pv2"
-            active={value === "pv2"}
+            allowed={!!hasPV2}
             label="Punto de Venta 2"
             desc="Ventas, inventario y stock."
-            onSelect={() => {
-              onChange("pv2");
-              setOpen(false);
-            }}
             grad="from-[#FF3816]/80 to-[#EE7203]/80"
+            icon={CartIcon}
           />
-          <LocationOption
+          <Option
             id="taller"
-            active={value === "taller"}
+            allowed={!!hasTaller}
             label="Taller"
-            desc="Gestión de OT. (no funcional)"
-            disabled
-            onSelect={() => {
-              onChange("taller");
-              setOpen(false);
-            }}
+            desc="Gestión de OT. (en preparación)"
             grad="from-emerald-500/70 to-teal-500/70"
+            icon={WrenchIcon}
           />
         </ul>
       )}
     </div>
-  );
-}
-
-function LocationOption({ id, active, label, desc, onSelect, disabled, grad }) {
-  return (
-    <li>
-      <button
-        role="option"
-        aria-selected={active}
-        disabled={disabled}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          if (!disabled) onSelect();
-        }}
-        className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left ${
-          disabled ? "opacity-70 cursor-not-allowed" : "hover:bg-white/5"
-        } ${active ? "bg-white/5" : ""}`}
-      >
-        <span
-          className={`h-8 w-8 rounded-lg ring-1 ring-white/10 bg-gradient-to-br ${grad} flex items-center justify-center`}
-        >
-          {id === "taller" ? (
-            <WrenchIcon className="h-4 w-4" />
-          ) : (
-            <CartIcon className="h-4 w-4" />
-          )}
-        </span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold truncate">{label}</span>
-            {id === "taller" && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 ring-1 ring-white/10">
-                Próximamente
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-white/60">{desc}</p>
-        </div>
-        {active ? <CheckIcon className="h-4 w-4 text-white/80" /> : null}
-      </button>
-    </li>
   );
 }
 
@@ -539,6 +606,13 @@ function HistorialView({ location }) {
   return (
     <div className="space-y-4 min-w-0">
       <HistorialVentas location={location} />
+    </div>
+  );
+}
+function CuentasView() {
+  return (
+    <div className="space-y-4 min-w-0">
+      <Cuentas />
     </div>
   );
 }
@@ -662,6 +736,24 @@ function HistoryIcon({ className = "" }) {
     </svg>
   );
 }
+function BankIcon({ className = "" }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none">
+      <path
+        d="M3 10l9-6 9 6v1H3v-1Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5 11v7M9 11v7M15 11v7M19 11v7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path d="M3 19h18" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
 function CheckIcon({ className = "" }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none">
@@ -728,6 +820,8 @@ function titleFor(active, loc) {
       return "Stock";
     case "historial":
       return "Historial de Ventas";
+    case "cuentas":
+      return "Cuentas";
     case "reportes":
       return "Reportes";
     default:
@@ -746,6 +840,8 @@ function subtitleFor(active, loc) {
       return "Ajustes rápidos, alertas y control de stock por sede.";
     case "historial":
       return "Listado de ventas realizadas, por sede.";
+    case "cuentas":
+      return "Gestión centralizada de cuentas (solo Admin General).";
     case "reportes":
       return "Indicadores y tableros operativos.";
     default:

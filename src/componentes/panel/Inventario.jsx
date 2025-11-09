@@ -39,6 +39,12 @@ export default function Inventario() {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
 
+  // 🔒 Permisos: solo nivel 4 (Admin) puede crear/editar/eliminar/importar/exportar
+  const isAdmin4 = useMemo(() => {
+    const p = Array.isArray(ctx?.permisos) ? ctx.permisos : [];
+    return p.includes(4);
+  }, [ctx?.permisos]);
+
   // ===== Wire con el Context =====
   const docsSnap = ctx?.productosDocs ?? ctx?.productDocs ?? [];
   const itemsCtx = ctx?.productos ?? ctx?.products ?? [];
@@ -252,11 +258,13 @@ export default function Inventario() {
 
   // ===== Modal =====
   function openCreate() {
+    if (!isAdmin4) return; // 🔒
     setEditing(null);
     setForm(blankProduct());
     setOpen(true);
   }
   function openEdit(prod) {
+    if (!isAdmin4) return; // 🔒
     setEditing(prod);
     setForm({
       ...blankProduct(),
@@ -285,6 +293,7 @@ export default function Inventario() {
 
   // ======== CREAR con TX ===========
   async function createProductWithUniqueIdTx(payload) {
+    if (!isAdmin4) return; // 🔒
     if (!firestore) throw new Error("Firestore no disponible");
     const orderedExistingIds =
       (docsSnap || []).map((d) => d.id).sort((a, b) => a.localeCompare(b)) ||
@@ -355,6 +364,7 @@ export default function Inventario() {
   // ===== Guardar =====
   async function handleSave(e) {
     e?.preventDefault?.();
+    if (!isAdmin4) return; // 🔒
     if (!firestore) return toast.error("Firestore no disponible");
 
     const payload = normalizeForSave(form);
@@ -392,6 +402,7 @@ export default function Inventario() {
 
   // ===== Borrar =====
   async function handleDelete(prod) {
+    if (!isAdmin4) return; // 🔒
     if (!firestore) return toast.error("Firestore no disponible");
     if (!confirm("¿Eliminar el producto?")) return;
     try {
@@ -411,6 +422,7 @@ export default function Inventario() {
 
   // ===== Import (xlsx/csv) =====
   async function handleImportExcel(ev) {
+    if (!isAdmin4) return; // 🔒
     const file = ev.target.files?.[0];
     ev.target.value = "";
     if (!file) return;
@@ -581,6 +593,7 @@ export default function Inventario() {
 
   // ===== Export Excel =====
   async function handleExportXLSX() {
+    if (!isAdmin4) return; // 🔒
     try {
       const ExcelJS = (await import("exceljs")).default;
       const wb = new ExcelJS.Workbook();
@@ -750,106 +763,112 @@ export default function Inventario() {
           </LabelPill>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          <label
-            title="Importá productos desde Excel/CSV"
-            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 cursor-pointer text-sm"
-          >
-            Importar (.xlsx)
-            <input
-              type="file"
-              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,text/csv"
-              onChange={handleImportExcel}
-              className="hidden"
-            />
-          </label>
-
-          <button
-            onClick={handleExportXLSX}
-            title="Exportar todo el inventario a Excel"
-            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
-          >
-            Exportar Excel
-          </button>
-
-          <button
-            onClick={openCreate}
-            title="Crear un nuevo producto"
-            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] text-sm font-medium shadow hover:opacity-95"
-          >
-            Nuevo
-          </button>
-
-          {/* Selector de columnas (a la derecha) */}
-          <div className="relative">
-            <button
-              ref={colsBtnRef}
-              onClick={() => setShowColsPanel((v) => !v)}
-              className="px-3 py-1.5 rounded-lg text-sm bg-white/10 hover:bg-white/15"
-              title="Configurar columnas"
+        {/* Botones de Admin: Importar / Exportar / Nuevo (ocultos si !isAdmin4) */}
+        {isAdmin4 && (
+          <div className="flex flex-wrap gap-1.5">
+            <label
+              title="Importá productos desde Excel/CSV"
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 cursor-pointer text-sm"
             >
-              Columnas
+              Importar (.xlsx)
+              <input
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,text/csv"
+                onChange={handleImportExcel}
+                className="hidden"
+              />
+            </label>
+
+            <button
+              onClick={handleExportXLSX}
+              title="Exportar todo el inventario a Excel"
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+            >
+              Exportar Excel
             </button>
-            {showColsPanel && (
-              <div
-                id="inv-cols-panel"
-                className="absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
+
+            <button
+              onClick={openCreate}
+              title="Crear un nuevo producto"
+              className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] text-sm font-medium shadow hover:opacity-95"
+            >
+              Nuevo
+            </button>
+
+            {/* Selector de columnas (a la derecha) */}
+            <div className="relative">
+              <button
+                ref={colsBtnRef}
+                onClick={() => setShowColsPanel((v) => !v)}
+                className="px-3 py-1.5 rounded-lg text-sm bg-white/10 hover:bg-white/15"
+                title="Configurar columnas"
               >
-                <p className="text-xs text-white/60 mb-2">
-                  Mostrar/ocultar columnas
-                </p>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  {[
-                    ["nombre", "Nombre"],
-                    ["codigo", "Código"],
-                    ["tipo", "Tipo"],
-                    ["proveedor", "Proveedor"],
-                    ["costo", "Costo"],
-                    ["ivaC", "IVA C."],
-                    ["precio", "Precio"],
-                    ["ivaV", "IVA V."],
-                    ["stock1", "Stock PV1"],
-                    ["stock2", "Stock PV2"],
-                    ["vtas", "Vtas"],
-                    ["cpras", "Cpras"],
-                    ["activo", "Activo"],
-                    ["acciones", "Acciones"],
-                  ].map(([key, label]) => (
-                    <label key={key} className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        className="accent-[#EE7203]"
-                        checked={!!cols[key]}
-                        onChange={(e) =>
-                          setCols((c) => ({ ...c, [key]: e.target.checked }))
-                        }
-                      />
-                      {label}
-                    </label>
-                  ))}
+                Columnas
+              </button>
+              {showColsPanel && (
+                <div
+                  id="inv-cols-panel"
+                  className="absolute right-0 mt-2 w-64 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
+                >
+                  <p className="text-xs text-white/60 mb-2">
+                    Mostrar/ocultar columnas
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    {[
+                      ["nombre", "Nombre"],
+                      ["codigo", "Código"],
+                      ["tipo", "Tipo"],
+                      ["proveedor", "Proveedor"],
+                      ["costo", "Costo"],
+                      ["ivaC", "IVA C."],
+                      ["precio", "Precio"],
+                      ["ivaV", "IVA V."],
+                      ["stock1", "Stock PV1"],
+                      ["stock2", "Stock PV2"],
+                      ["vtas", "Vtas"],
+                      ["cpras", "Cpras"],
+                      ["activo", "Activo"],
+                      ["acciones", "Acciones"],
+                    ].map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="inline-flex items-center gap-2"
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-[#EE7203]"
+                          checked={!!cols[key]}
+                          onChange={(e) =>
+                            setCols((c) => ({ ...c, [key]: e.target.checked }))
+                          }
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end gap-2 mt-3">
+                    <button
+                      onClick={() => setCols(DEFAULT_COLS)}
+                      className="px-2 py-1 text-xs rounded-md bg-white/10 hover:bg-white/15"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={() => setShowColsPanel(false)}
+                      className="px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                    >
+                      OK
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center justify-end gap-2 mt-3">
-                  <button
-                    onClick={() => setCols(DEFAULT_COLS)}
-                    className="px-2 py-1 text-xs rounded-md bg-white/10 hover:bg-white/15"
-                  >
-                    Reset
-                  </button>
-                  <button
-                    onClick={() => setShowColsPanel(false)}
-                    className="px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
-                  >
-                    OK
-                  </button>
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Loader/Progreso de import */}
-      {imp.running && (
+      {isAdmin4 && imp.running && (
         <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
           <div className="flex items-center justify-between mb-2">
             <div className="font-medium">Importando: {imp.filename}</div>
@@ -892,13 +911,16 @@ export default function Inventario() {
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex items-start gap-2">
-                  <IconGhost
-                    title="Editar producto"
-                    ariaLabel="Editar"
-                    onClick={() => openEdit(p)}
-                  >
-                    <FiEdit2 className="w-4 h-4" />
-                  </IconGhost>
+                  {/* Botón editar solo admin */}
+                  {isAdmin4 && (
+                    <IconGhost
+                      title="Editar producto"
+                      ariaLabel="Editar"
+                      onClick={() => openEdit(p)}
+                    >
+                      <FiEdit2 className="w-4 h-4" />
+                    </IconGhost>
+                  )}
                   <div className="min-w-0">
                     <h4
                       className="font-semibold leading-tight break-words"
@@ -940,15 +962,18 @@ export default function Inventario() {
                 <Info label="Stock PV2" value={String(p.stockPv2 ?? 0)} />
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                <IconBtn
-                  title="Eliminar producto"
-                  onClick={() => handleDelete(p)}
-                  icon={<FiTrash2 className="w-4 h-4" />}
-                  label="Eliminar"
-                  danger
-                />
-              </div>
+              {/* Acciones (Eliminar) solo admin */}
+              {isAdmin4 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <IconBtn
+                    title="Eliminar producto"
+                    onClick={() => handleDelete(p)}
+                    icon={<FiTrash2 className="w-4 h-4" />}
+                    label="Eliminar"
+                    danger
+                  />
+                </div>
+              )}
             </article>
           ))
         )}
@@ -1024,8 +1049,11 @@ export default function Inventario() {
                 {cols.activo && (
                   <Th className="w-[90px] text-center">Activo</Th>
                 )}
-                {cols.acciones && (
-                  <Th className="w-[140px] text-center">Acciones</Th>
+                {/* Columna Acciones solo si admin y si está habilitada en columnas */}
+                {isAdmin4 && cols.acciones && (
+                  <Th className="w-[-webkit-fill-available] w-[140px] text-center">
+                    Acciones
+                  </Th>
                 )}
               </tr>
             </thead>
@@ -1051,13 +1079,16 @@ export default function Inventario() {
                     {cols.nombre && (
                       <Td className="sticky left-0 z-10" stickyBg>
                         <div className="flex items-start gap-2 min-w-0">
-                          <IconGhost
-                            title="Editar producto"
-                            ariaLabel="Editar"
-                            onClick={() => openEdit(p)}
-                          >
-                            <FiEdit2 className="w-4 h-4" />
-                          </IconGhost>
+                          {/* Edit solo admin */}
+                          {isAdmin4 && (
+                            <IconGhost
+                              title="Editar producto"
+                              ariaLabel="Editar"
+                              onClick={() => openEdit(p)}
+                            >
+                              <FiEdit2 className="w-4 h-4" />
+                            </IconGhost>
+                          )}
                           <span className="truncate" title={p.name || "-"}>
                             {p.name || "-"}
                           </span>
@@ -1175,7 +1206,8 @@ export default function Inventario() {
                         <Dot ok={p.enabled !== false} />
                       </Td>
                     )}
-                    {cols.acciones && (
+                    {/* Acciones solo admin */}
+                    {isAdmin4 && cols.acciones && (
                       <Td className="text-center">
                         <div className="flex items-center justify-center gap-1.5 flex-wrap">
                           <IconBtn
@@ -1238,8 +1270,8 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* Modal Crear/Editar */}
-      {open && (
+      {/* Modal Crear/Editar — solo se abre si isAdmin4 */}
+      {isAdmin4 && open && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
           <div
             className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h[85vh] max-h-[85vh] overflow-y-auto"

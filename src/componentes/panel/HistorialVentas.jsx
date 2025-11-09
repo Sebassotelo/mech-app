@@ -15,6 +15,12 @@ import {
 export default function HistorialVentas({ location = "pv1" }) {
   const ctx = useContext(ContextGeneral);
 
+  // 🔒 Permisos: solo nivel 4 (Admin) puede anular/eliminar ventas
+  const isAdmin4 = useMemo(() => {
+    const p = Array.isArray(ctx?.permisos) ? ctx.permisos : [];
+    return p.includes(4);
+  }, [ctx?.permisos]);
+
   const ventas = Array.isArray(ctx?.ventas) ? ctx.ventas : [];
   const loading = ctx?.loader === true && ventas.length === 0;
   const [q, setQ] = useState("");
@@ -45,7 +51,7 @@ export default function HistorialVentas({ location = "pv1" }) {
       .slice(0, 200);
   }, [ventasDeSede, q]);
 
-  // ===== Resumen para mostrar bien "ventas totales" (solo activas) =====
+  // ===== Resumen (solo activas computan en monto/tickets) =====
   const resumen = useMemo(() => {
     let monto = 0;
     let tickets = 0;
@@ -66,7 +72,7 @@ export default function HistorialVentas({ location = "pv1" }) {
 
   return (
     <div className="min-w-0">
-      {/* Filtro + acciones (stack en mobile) */}
+      {/* Filtro + acciones */}
       <div className="mb-4 flex flex-col sm:flex-row gap-2 sm:items-center">
         <input
           value={q}
@@ -90,7 +96,7 @@ export default function HistorialVentas({ location = "pv1" }) {
         </div>
       </div>
 
-      {/* Resumen (solo activas computan) */}
+      {/* Resumen */}
       <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
         <span className="px-2 py-1 rounded-lg bg-white/5 border border-white/10">
           Total activas: <strong>{money(resumen.monto)}</strong>
@@ -107,16 +113,15 @@ export default function HistorialVentas({ location = "pv1" }) {
       <div className="hidden md:block overflow-hidden rounded-2xl border border-white/10">
         <div className="max-h-[70vh] overflow-auto">
           <table className="w-full text-sm table-fixed">
-            {/* Fijamos anchos para evitar columnas apretadas */}
             <colgroup>
-              <col style={{ width: 160 }} /> {/* Fecha */}
-              <col style={{ width: 80 }} /> {/* Sede */}
-              <col style={{ width: 80 }} /> {/* Ítems */}
-              <col style={{ width: 120 }} /> {/* Subtotal */}
-              <col style={{ width: 120 }} /> {/* Recargo */}
-              <col style={{ width: 130 }} /> {/* Total */}
-              <col style={{ width: 150 }} /> {/* Pago */}
-              <col /> {/* Creada por (resto) */}
+              <col style={{ width: 160 }} />
+              <col style={{ width: 80 }} />
+              <col style={{ width: 80 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 150 }} />
+              <col />
             </colgroup>
             <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
               <tr>
@@ -287,6 +292,7 @@ export default function HistorialVentas({ location = "pv1" }) {
       {sel && (
         <VentaDrawer
           venta={sel}
+          isAdmin4={isAdmin4}
           onClose={() => setSel(null)}
           onDeleted={() => {
             setSel(null);
@@ -299,7 +305,7 @@ export default function HistorialVentas({ location = "pv1" }) {
 }
 
 /* =================== Drawer Detalle =================== */
-function VentaDrawer({ venta, onClose, onDeleted }) {
+function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
 
@@ -321,6 +327,7 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
   const hasSurcharge = !!s?.applied || surcharge > 0;
 
   async function handleDeleteVenta() {
+    if (!isAdmin4) return; // 🔒
     if (!firestore) return toast.error("Firestore no disponible");
     const ok = window.confirm(
       "¿Anular esta venta?\n\nSe marcará como 'voided' dentro del chunk."
@@ -361,6 +368,7 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
   }
 
   async function handleHardDeleteVenta() {
+    if (!isAdmin4) return; // 🔒
     if (!firestore) return toast.error("Firestore no disponible");
 
     const chunkId = venta?.chunkDoc;
@@ -397,6 +405,8 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
     }
   }
 
+  const canceled = isCanceled(venta);
+
   return (
     <div className="fixed inset-0 z-40">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -419,6 +429,7 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
             <div className="hidden sm:flex items-center gap-2">
               <Badge>{labelMethod(method)}</Badge>
               <Badge>{venta?.status || "pending"}</Badge>
+              {canceled && <Badge>ANULADA</Badge>}
             </div>
             <button
               onClick={onClose}
@@ -559,20 +570,26 @@ function VentaDrawer({ venta, onClose, onDeleted }) {
               >
                 Cerrar
               </button>
-              <button
-                onClick={handleDeleteVenta}
-                className="px-4 py-2 rounded-xl text-sm bg-red-500/20 hover:bg-red-500/25 text-red-200 ring-1 ring-white/10"
-                title="Anular venta (soft delete en chunk)"
-              >
-                Anular
-              </button>
-              <button
-                onClick={handleHardDeleteVenta}
-                className="px-4 py-2 rounded-xl text-sm bg-red-600/20 hover:bg-red-600/30 text-red-200 ring-1 ring-red-500/40"
-                title="Eliminar definitivamente (borra el campo v_* del chunk)"
-              >
-                Eliminar definitivamente
-              </button>
+
+              {/* 🔒 Acciones destructivas solo Admin */}
+              {isAdmin4 && (
+                <>
+                  <button
+                    onClick={handleDeleteVenta}
+                    className="px-4 py-2 rounded-xl text-sm bg-red-500/20 hover:bg-red-500/25 text-red-200 ring-1 ring-white/10"
+                    title="Anular venta (soft delete en chunk)"
+                  >
+                    Anular
+                  </button>
+                  <button
+                    onClick={handleHardDeleteVenta}
+                    className="px-4 py-2 rounded-xl text-sm bg-red-600/20 hover:bg-red-600/30 text-red-200 ring-1 ring-red-500/40"
+                    title="Eliminar definitivamente (borra el campo v_* del chunk)"
+                  >
+                    Eliminar definitivamente
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
