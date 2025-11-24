@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import HomeOverview from "@/componentes/panel/HomeOverview";
 import Stock from "@/componentes/panel/Stock";
 import Cuentas from "@/componentes/panel/Cuentas"; // ✅ solo admin(4)
+import Caja from "@/componentes/panel/Caja"; // ✅ NUEVO
 import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/router";
 
@@ -23,7 +24,7 @@ export default function Dashboard() {
 
   // Estado UI
   const [location, setLocation] = useState("pv1"); // pv1 | pv2 | taller
-  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | cuentas | reportes
+  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | cuentas | reportes | caja
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // ───────── Permisos
@@ -33,17 +34,23 @@ export default function Dashboard() {
   const hasTaller = permisos.includes(3);
   const isAdmin4 = permisos.includes(4);
 
+  // 👉 Para el admin, consideramos que tiene acceso a todas las sedes
+  const canPV1 = hasPV1 || isAdmin4;
+  const canPV2 = hasPV2 || isAdmin4;
+  const canTaller = hasTaller || isAdmin4;
+
   const allowedFor = (loc) =>
-    (loc === "pv1" && hasPV1) ||
-    (loc === "pv2" && hasPV2) ||
-    (loc === "taller" && hasTaller);
+    isAdmin4 || // override total
+    (loc === "pv1" && canPV1) ||
+    (loc === "pv2" && canPV2) ||
+    (loc === "taller" && canTaller);
 
   const firstAllowedLocation = useMemo(() => {
-    if (hasPV1) return "pv1";
-    if (hasPV2) return "pv2";
-    if (hasTaller) return "taller";
+    if (canPV1) return "pv1";
+    if (canPV2) return "pv2";
+    if (canTaller) return "taller";
     return null;
-  }, [hasPV1, hasPV2, hasTaller]);
+  }, [canPV1, canPV2, canTaller]);
 
   // ───────── Auth effect
   useEffect(() => {
@@ -98,20 +105,23 @@ export default function Dashboard() {
       if (l) setLocation(l);
     } catch {}
   }, []);
+
   // Si la sede persistida no está permitida, forzar a la primera permitida
   useEffect(() => {
-    if (!firstAllowedLocation) return; // en teoría siempre hay al menos una
+    if (!firstAllowedLocation) return;
     if (!allowedFor(location)) {
       setLocation(firstAllowedLocation);
       setActive(defaultActiveFor(firstAllowedLocation));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstAllowedLocation, permisos]);
+
   useEffect(() => {
     try {
       localStorage.setItem("mx.active", active);
     } catch {}
   }, [active]);
+
   useEffect(() => {
     try {
       localStorage.setItem("mx.location", location);
@@ -121,7 +131,8 @@ export default function Dashboard() {
   // ───────── Nav dinámico (agrega CUENTAS sólo si es admin4)
   const navItems = useMemo(() => {
     const base = [];
-    // Si no tiene permiso para la sede actual, solo muestro "Inicio"
+
+    // Si NO hay permiso para la sede actual (salvo admin), solo muestro "Inicio"
     if (!allowedFor(location)) {
       base.push({ id: "home", label: "Inicio", icon: HomeIcon });
       if (isAdmin4)
@@ -130,12 +141,12 @@ export default function Dashboard() {
     }
 
     if (location === "taller") {
-      // Taller aún placeholder, pero respetamos permiso 3 para entrar
       base.push({ id: "home", label: "Inicio", icon: HomeIcon });
     } else {
       base.push(
         { id: "home", label: "Inicio", icon: HomeIcon },
         { id: "ventas", label: "Ventas", icon: CartIcon },
+        { id: "caja", label: "Caja", icon: CashIcon }, // ✅ NUEVO
         { id: "inventario", label: "Inventario", icon: BoxIcon },
         { id: "stock", label: "Stock", icon: StockIcon },
         { id: "historial", label: "Historial de ventas", icon: HistoryIcon }
@@ -153,18 +164,20 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, navItems]);
 
-  // Gate de vistas: si no hay permiso para la sede, muestro AccessDenied
+  // Gate de vistas: si no hay permiso para la sede (salvo admin), muestro AccessDenied
   const blockedByPerm = !allowedFor(location);
   const CurrentView = useMemo(() => {
-    if (blockedByPerm) return <AccessDenied location={location} />;
+    if (blockedByPerm && !isAdmin4) return <AccessDenied location={location} />;
+
     if (active === "ventas") return <VentasView location={location} />;
+    if (active === "caja") return <CajaView location={location} />; // ✅ NUEVO
     if (active === "inventario") return <InventarioView location={location} />;
     if (active === "stock") return <StockView location={location} />;
     if (active === "historial") return <HistorialView location={location} />;
     if (active === "reportes") return <ReportesView location={location} />;
     if (active === "cuentas") return <CuentasView />; // ✅ solo aparece si isAdmin4
     return <HomeView location={location} />;
-  }, [active, location, blockedByPerm]);
+  }, [active, location, blockedByPerm, isAdmin4]);
 
   // ───────── Mobile: bloquear scroll + cerrar con ESC
   const drawerRef = useRef(null);
@@ -185,17 +198,20 @@ export default function Dashboard() {
   }, [mobileNavOpen]);
 
   const handleLocationChange = (loc) => {
-    // Bloquear cambio si no tiene permiso de esa sede
-    if (
-      !(
-        (loc === "pv1" && hasPV1) ||
-        (loc === "pv2" && hasPV2) ||
-        (loc === "taller" && hasTaller)
-      )
-    ) {
-      toast.error("No tenés permiso para esa sede");
-      return;
+    // 👉 Admin puede cambiar a cualquier sede
+    if (!isAdmin4) {
+      if (
+        !(
+          (loc === "pv1" && canPV1) ||
+          (loc === "pv2" && canPV2) ||
+          (loc === "taller" && canTaller)
+        )
+      ) {
+        toast.error("No tenés permiso para esa sede");
+        return;
+      }
     }
+
     if (loc === "taller") {
       toast.info("Módulo Taller: próximamente");
       setLocation("taller");
@@ -234,6 +250,9 @@ export default function Dashboard() {
         <SidebarHeader
           location={location}
           onChangeLocation={handleLocationChange}
+          canPV1={canPV1}
+          canPV2={canPV2}
+          canTaller={canTaller}
         />
         <NavList navItems={navItems} active={active} onClickItem={setActive} />
         <div className="p-4 border-t border-white/10 text-xs text-white/50">
@@ -264,13 +283,6 @@ export default function Dashboard() {
             <p className="text-xs text-white/60 leading-none">Mecánico App</p>
             <h1 className="text-base font-semibold">Panel</h1>
           </div>
-          <button
-            onClick={() => setMobileNavOpen(false)}
-            className="p-2 rounded-lg hover:bg-white/10"
-            aria-label="Cerrar menú"
-          >
-            <XIcon className="h-5 w-5" />
-          </button>
         </div>
 
         <div className="p-4 border-b border-white/10">
@@ -280,9 +292,9 @@ export default function Dashboard() {
           <LocationDropdown
             value={location}
             onChange={handleLocationChange}
-            hasPV1={hasPV1}
-            hasPV2={hasPV2}
-            hasTaller={hasTaller}
+            hasPV1={canPV1}
+            hasPV2={canPV2}
+            hasTaller={canTaller}
           />
         </div>
 
@@ -344,7 +356,7 @@ export default function Dashboard() {
             </div>
 
             <span
-              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg-white/5 ring-1 ring-white/10 ${
+              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg:white/5 ring-1 ring-white/10 ${
                 location === "taller" ? "opacity-80" : ""
               }`}
             >
@@ -379,7 +391,13 @@ export default function Dashboard() {
 }
 
 /* ───────── Sidebar Header ───────── */
-function SidebarHeader({ location, onChangeLocation }) {
+function SidebarHeader({
+  location,
+  onChangeLocation,
+  canPV1,
+  canPV2,
+  canTaller,
+}) {
   return (
     <div className="p-5 border-b border-white/10">
       <div className="mb-4">
@@ -389,7 +407,13 @@ function SidebarHeader({ location, onChangeLocation }) {
       <p className="text-[11px] uppercase tracking-widest text-white/50 mb-2">
         Seleccioná la sede
       </p>
-      <LocationDropdown value={location} onChange={onChangeLocation} />
+      <LocationDropdown
+        value={location}
+        onChange={onChangeLocation}
+        hasPV1={canPV1}
+        hasPV2={canPV2}
+        hasTaller={canTaller}
+      />
     </div>
   );
 }
@@ -405,7 +429,7 @@ function AccessDenied({ location }) {
   return (
     <div className="rounded-xl border border-white/10 p-6 bg-white/5">
       <h3 className="text-lg font-semibold">Acceso restringido</h3>
-      <p className="text-sm text-white/70 mt-1">
+      <p className="text-sm text:white/70 mt-1">
         No tenés permisos para operar en <b>{label}</b>. Cambiá de sede o pedí
         acceso al admin.
       </p>
@@ -500,7 +524,7 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
           <IconEl className="h-4 w-4" />
         </span>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items:center gap-2">
             <span className="text-sm font-semibold truncate">{label}</span>
             {!allowed && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 ring-1 ring-white/10">
@@ -547,7 +571,7 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
             id="pv1"
             allowed={!!hasPV1}
             label="Punto de Venta 1"
-            desc="Ventas, inventario y stock."
+            desc="Ventas, inventario, stock y caja."
             grad="from-[#EE7203]/80 to-[#FF3816]/80"
             icon={CartIcon}
           />
@@ -555,7 +579,7 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
             id="pv2"
             allowed={!!hasPV2}
             label="Punto de Venta 2"
-            desc="Ventas, inventario y stock."
+            desc="Ventas, inventario, stock y caja."
             grad="from-[#FF3816]/80 to-[#EE7203]/80"
             icon={CartIcon}
           />
@@ -585,6 +609,13 @@ function VentasView({ location }) {
   return (
     <div className="space-y-4 min-w-0">
       <Ventas location={location} />
+    </div>
+  );
+}
+function CajaView({ location }) {
+  return (
+    <div className="space-y-4 min-w-0">
+      <Caja location={location} />
     </div>
   );
 }
@@ -667,6 +698,29 @@ function CartIcon({ className = "" }) {
       <path d="M3 4h2l2 12h10l2-8H7" stroke="currentColor" strokeWidth="1.5" />
       <circle cx="9" cy="20" r="1" fill="currentColor" />
       <circle cx="17" cy="20" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+function CashIcon({ className = "" }) {
+  // 💵 Icono caja / dinero
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none">
+      <rect
+        x="3"
+        y="6"
+        width="18"
+        height="12"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M6 9.5c1 0 1.5-.5 2-1.5M18 14.5c-1 0-1.5.5-2 1.5"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -785,23 +839,6 @@ function MenuIcon({ className = "" }) {
     </svg>
   );
 }
-function XIcon({ className = "" }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M6 6l12 12M18 6l-12 12"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
 function Dot({ className = "" }) {
   return (
     <span className={`inline-block h-2.5 w-2.5 rounded-full ${className}`} />
@@ -814,6 +851,8 @@ function titleFor(active, loc) {
   switch (active) {
     case "ventas":
       return "Ventas";
+    case "caja":
+      return "Caja";
     case "inventario":
       return "Inventario";
     case "stock":
@@ -834,6 +873,8 @@ function subtitleFor(active, loc) {
   switch (active) {
     case "ventas":
       return "Registrá ventas y cobros por sede.";
+    case "caja":
+      return "Controlá ingresos, egresos y el estado de caja del turno.";
     case "inventario":
       return "Gestioná productos, precios y stock.";
     case "stock":

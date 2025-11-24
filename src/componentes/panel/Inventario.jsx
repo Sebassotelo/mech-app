@@ -119,6 +119,9 @@ export default function Inventario() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blankProduct());
 
+  // ref del modal para click afuera
+  const modalRef = useRef(null);
+
   // refs de inputs
   const skuInputRef = useRef(null);
 
@@ -158,6 +161,18 @@ export default function Inventario() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
 
+  // 🔑 Cerrar modal con ESC
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e) {
+      if (e.key === "Escape") {
+        setOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open]);
+
   // Import progress
   const [imp, setImp] = useState({
     running: false,
@@ -169,7 +184,7 @@ export default function Inventario() {
     error: "",
   });
 
-  // ====== ID incremental local ======
+  // ====== ID incremental local ====== (legacy, lo dejamos por compatibilidad)
   const nextLocalIdRef = useRef(null);
   useEffect(() => {
     const max = computeMaxId(items, docsSnap);
@@ -184,7 +199,7 @@ export default function Inventario() {
     return id;
   }
 
-  // ====== ID random único local ======
+  // ====== ID random único local ====== (usado en TX)
   const sessionIdsRef = useRef(new Set());
   function randomIdRaw() {
     try {
@@ -459,7 +474,9 @@ export default function Inventario() {
       const headers = (rawRows[0] || []).map((h) => normHeader(h));
       const rows = rawRows.slice(1).map((r) => {
         const obj = {};
-        headers.forEach((h, i) => (obj[h] = (r[i] ?? "").toString().trim()));
+        headers.forEach((h, i) => {
+          obj[h] = (r[i] ?? "").toString().trim();
+        });
         return obj;
       });
 
@@ -469,9 +486,16 @@ export default function Inventario() {
 
       setImp((s) => ({ ...s, total: mapped.length }));
 
-      const byId = new Map(items.map((p) => [String(p.id), p]));
-      const usedIds = new Set(items.map((p) => String(p.id)));
-      const nextIdCounter = makeNextIdCounter(usedIds);
+      // === Normalizar IDs existentes de la base ===
+      const byId = new Map();
+      const usedIdKeys = new Set();
+      for (const p of items) {
+        const key = normalizeIdForMatch(p.id);
+        if (!key) continue;
+        if (!byId.has(key)) byId.set(key, p);
+        usedIdKeys.add(key);
+      }
+      const nextIdCounter = makeNextIdCounter(usedIdKeys);
 
       const counts = new Map(
         docsSnap.map((d) => [
@@ -494,8 +518,23 @@ export default function Inventario() {
       };
 
       for (const r of mapped) {
-        const desiredId = r.id ? pad6(r.id) : nextIdCounter();
-        const existing = byId.get(desiredId);
+        // 🔁 Normalizamos el ID que viene del Excel
+        const rowKey = normalizeIdForMatch(r.id);
+        const existing = rowKey ? byId.get(rowKey) : undefined;
+
+        let desiredId;
+        if (existing) {
+          // Si ya existe en la base, usamos el ID que tiene en Firestore
+          desiredId = existing.id;
+        } else if (rowKey) {
+          // Si viene un ID en el Excel pero no existe en la base, usamos ese ID normalizado
+          desiredId = rowKey;
+          usedIdKeys.add(rowKey);
+        } else {
+          // Si no viene ID, generamos uno nuevo (numérico incremental, padded a 6)
+          desiredId = nextIdCounter();
+        }
+
         const fieldKey = `p_${desiredId}`;
 
         const payload = normalizeForSave({
@@ -556,8 +595,8 @@ export default function Inventario() {
             updatedAt: serverTimestamp(),
           };
           putInDocBatch(targetDocId, fieldKey, valueObj);
-          byId.set(desiredId, valueObj);
-          usedIds.add(desiredId);
+          byId.set(normalizeIdForMatch(desiredId), valueObj);
+          usedIdKeys.add(normalizeIdForMatch(desiredId));
           created++;
         }
 
@@ -591,7 +630,7 @@ export default function Inventario() {
     }
   }
 
-  // ===== Export Excel =====
+  // ===== Export Excel (mismo formato que espera el import) =====
   async function handleExportXLSX() {
     if (!isAdmin4) return; // 🔒
     try {
@@ -687,6 +726,70 @@ export default function Inventario() {
     }
   }
 
+  // ===== Exportar PLANTILLA vacía =====
+  async function handleExportTemplateXLSX() {
+    if (!isAdmin4) return; // 🔒
+    try {
+      const ExcelJS = (await import("exceljs")).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Plantilla Inventario");
+
+      const ALL_COLS = [
+        "Id",
+        "Nombre",
+        "Tipo de Producto",
+        "Proveedor",
+        "Código",
+        "Stock PV1",
+        "Stock PV2",
+        "Costo",
+        "IVA Compras (%)",
+        "Precio de Venta (contado)",
+        "IVA Ventas (%)",
+        "Descripción",
+        "Activo",
+        "Mostrar en Ventas",
+        "Mostrar en Compras",
+      ];
+
+      ws.columns = ALL_COLS.map((header) => ({ header, key: header }));
+
+      const headerRow = ws.getRow(1);
+      headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      headerRow.alignment = { vertical: "middle", horizontal: "center" };
+      headerRow.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF112C3E" },
+      };
+      headerRow.height = 20;
+
+      ws.columns.forEach((col) => {
+        const len = String(col.header ?? "").length;
+        col.width = Math.min(45, Math.max(12, len + 2));
+      });
+
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `plantilla_inventario_${new Date()
+        .toISOString()
+        .slice(0, 10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Plantilla de Excel exportada");
+    } catch (e) {
+      console.error(e);
+      toast.error("No se pudo exportar la plantilla");
+    }
+  }
+
   // ===== UI tabla =====
   const tableScrollRef = useRef(null);
   const isDownRef = useRef(false);
@@ -763,7 +866,7 @@ export default function Inventario() {
           </LabelPill>
         </div>
 
-        {/* Botones de Admin: Importar / Exportar / Nuevo (ocultos si !isAdmin4) */}
+        {/* Botones de Admin: Importar / Exportar / Plantilla / Nuevo (ocultos si !isAdmin4) */}
         {isAdmin4 && (
           <div className="flex flex-wrap gap-1.5">
             <label
@@ -782,9 +885,17 @@ export default function Inventario() {
             <button
               onClick={handleExportXLSX}
               title="Exportar todo el inventario a Excel"
-              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+              className="px-3 py-1.5 rounded-lg bg:white/10 bg-white/10 hover:bg-white/15 text-sm"
             >
               Exportar Excel
+            </button>
+
+            <button
+              onClick={handleExportTemplateXLSX}
+              title="Exportar plantilla vacía con las mismas columnas"
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+            >
+              Exportar plantilla
             </button>
 
             <button
@@ -869,7 +980,7 @@ export default function Inventario() {
 
       {/* Loader/Progreso de import */}
       {isAdmin4 && imp.running && (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
+        <div className="rounded-xl border border-white/10 bg:white/5 bg-white/5 p-3 text-sm">
           <div className="flex items-center justify-between mb-2">
             <div className="font-medium">Importando: {imp.filename}</div>
             <div className="text-white/70">
@@ -1139,7 +1250,7 @@ export default function Inventario() {
                       <Td
                         className="text-right whitespace-nowrap"
                         title={fmtTitle(
-                          "Precio (contado)",
+                          "Precio (venta)",
                           money(finalPriceContado(p))
                         )}
                       >
@@ -1272,8 +1383,18 @@ export default function Inventario() {
 
       {/* Modal Crear/Editar — solo se abre si isAdmin4 */}
       {isAdmin4 && open && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          onMouseDown={(e) => {
+            // cerrar si se hace click en el overlay (afuera del modal)
+            if (modalRef.current && !modalRef.current.contains(e.target)) {
+              setOpen(false);
+            }
+          }}
+        >
           <div
+            ref={modalRef}
+            onMouseDown={(e) => e.stopPropagation()}
             className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h[85vh] max-h-[85vh] overflow-y-auto"
             role="dialog"
           >
@@ -1381,7 +1502,7 @@ export default function Inventario() {
                 />
               </Field>
 
-              <Field label="Precio de Venta (contado)" required>
+              <Field label="Precio de Venta" required>
                 <input
                   type="number"
                   step="0.01"
@@ -1389,8 +1510,12 @@ export default function Inventario() {
                   onChange={(e) => setForm({ ...form, price: e.target.value })}
                   className="inp"
                   placeholder="0.00"
-                  title="Precio de venta (contado)"
+                  title="Precio de venta normal al público (lista)"
                 />
+                <p className="mt-1 text-[11px] text-white/60">
+                  Este es el precio de venta normal al público. No distingue
+                  contado / tarjeta, es el precio de lista del producto.
+                </p>
               </Field>
 
               <Field label="IVA Ventas (%)">
@@ -1407,7 +1532,7 @@ export default function Inventario() {
                 />
               </Field>
 
-              <Field label="Precio contado con descuento">
+              <Field label="Precio con descuento">
                 <input
                   type="number"
                   step="0.01"
@@ -1417,27 +1542,52 @@ export default function Inventario() {
                   }
                   className="inp"
                   placeholder="0.00"
-                  title="Precio promocional (contado)"
+                  title="Precio cuando el producto está en oferta/promoción (no es precio de contado)"
                 />
+                <p className="mt-1 text-[11px] text-white/60">
+                  Usá este campo solo cuando el producto esté en oferta o
+                  promoción. <strong>No es el precio al contado</strong>, es un
+                  precio promocional que reemplaza al precio de venta mientras
+                  el descuento esté activo.
+                </p>
               </Field>
 
               {/* ACTIVABLES */}
               <Field label="Descuento activo">
-                <div className="flex items-center gap-2">
-                  <TogglePill
-                    checked={!!form.discountActive}
-                    disabled={toNum(form.priceDiscount) <= 0}
-                    onChange={(v) => setForm({ ...form, discountActive: v })}
-                  />
-                  <span className="text-[11px] text-white/60">
-                    {toNum(form.priceDiscount) > 0
-                      ? form.discountActive
-                        ? "Se aplicará en ventas"
-                        : "Desactivado"
-                      : "Ingresá precio con descuento para activarlo"}
-                  </span>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <TogglePill
+                      checked={!!form.discountActive}
+                      disabled={toNum(form.priceDiscount) <= 0}
+                      onChange={(v) => setForm({ ...form, discountActive: v })}
+                    />
+                    <span className="text-[11px] text-white/60">
+                      {toNum(form.priceDiscount) > 0
+                        ? form.discountActive
+                          ? "Cuando está activo, en las ventas se usa el Precio con descuento en lugar del Precio de Venta."
+                          : "Desactivado. Se usa el Precio de Venta normal."
+                        : "Ingresá Precio con descuento para poder activar la promo."}
+                    </span>
+                  </div>
                 </div>
               </Field>
+
+              {/* Bloque de aclaración general sobre precios */}
+              <div className="sm:col-span-2 md:col-span-3">
+                <div className="rounded-lg border border-white/15 bg-white/5 p-2">
+                  <p className="text-[11px] text-white/70 leading-snug">
+                    <span className="font-semibold">Resumen:</span>{" "}
+                    <span className="underline">Precio de Venta</span> es el
+                    precio normal de venta al público (lista).{" "}
+                    <span className="underline">Precio con descuento</span> se
+                    usa únicamente cuando el producto está en{" "}
+                    <strong>oferta/promoción</strong> y tenés el{" "}
+                    <strong>Descuento activo</strong>. Ese precio promocional{" "}
+                    <strong>NO es el precio al contado</strong>, las condiciones
+                    de pago se manejan aparte.
+                  </p>
+                </div>
+              </div>
 
               <Field label="Mostrar en Ventas">
                 <div className="flex items-center gap-2">
@@ -2161,18 +2311,45 @@ function toIntFlexible(v) {
 function safeStr(v) {
   return (v == null ? "" : String(v)).trim();
 }
+
+// 🔁 Normalización común de IDs (base + Excel)
+// - Mayúsculas
+// - Si solo números => pad a 6 (000123)
+// - Si tiene letras => se quedan letras+ números (sin espacios/símbolos)
+function normalizeIdForMatch(raw) {
+  const s = safeStr(raw).toUpperCase();
+  if (!s) return "";
+  const letters = s.replace(/[^A-Z]/g, "");
+  const digits = s.replace(/\D/g, "");
+  if (!letters && digits) {
+    return digits.padStart(6, "0");
+  }
+  const alnum = s.replace(/[^A-Z0-9]/g, "");
+  return alnum || s;
+}
+
+/**
+ * Importa EXACTAMENTE el Excel exportado por handleExportXLSX
+ * (mismas columnas, mismos encabezados).
+ */
 function mapRowToProductModel(row) {
   const get = (key) => row[key] ?? "";
+
+  // Claves esperadas (salida de normHeader sobre los headers de export)
   const id = safeStr(get("id"));
   const nombre = safeStr(get("nombre"));
   const tipoProducto = safeStr(get("tipo de producto"));
   const proveedor = safeStr(get("proveedor"));
   const codigo = safeStr(get("codigo"));
-  const stock = get("stock");
+
+  const stockPv1 = get("stock pv1");
+  const stockPv2 = get("stock pv2");
+
   const costo = get("costo");
-  const ivaC = get("iva compras");
-  const precioVenta = get("precio de venta");
-  const ivaV = get("iva ventas");
+  const ivaC = get("iva compras (%)");
+  const precioVenta = get("precio de venta (contado)");
+  const ivaV = get("iva ventas (%)");
+
   const descripcion = safeStr(get("descripcion"));
   const activo = get("activo");
   const showSales = get("mostrar en ventas");
@@ -2184,8 +2361,8 @@ function mapRowToProductModel(row) {
     category: tipoProducto,
     provider: proveedor,
     sku: codigo,
-    stockPv1: toIntFlexible(stock),
-    stockPv2: 0,
+    stockPv1: toIntFlexible(stockPv1),
+    stockPv2: toIntFlexible(stockPv2),
     minStock: 0,
     cost: toNumberFlexible(costo),
     ivaCompras: toNumberFlexible(ivaC),

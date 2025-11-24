@@ -67,10 +67,19 @@ export default function Cuentas() {
     return () => unsub();
   }, [firestore, isAdmin4]);
 
+  // 🚫 NO mostrar admins (permiso 4) en la lista
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return usuarios;
-    return usuarios.filter((u) => {
+
+    // primero saco todos los que tienen permiso 4
+    const sinAdmins = usuarios.filter((u) => {
+      const perms = Array.isArray(u.permisos) ? u.permisos : [];
+      return !perms.includes(4);
+    });
+
+    if (!q) return sinAdmins;
+
+    return sinAdmins.filter((u) => {
       const email = String(u.email || "").toLowerCase();
       const name = String(u.displayName || "").toLowerCase();
       return email.includes(q) || name.includes(q);
@@ -200,7 +209,7 @@ export default function Cuentas() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-xl font-semibold">Cuentas</h3>
-          <p className="text-sm text-white/60">
+          <p className="text-sm text.white/60 text-white/60">
             Gestión de usuarios y permisos.
           </p>
         </div>
@@ -248,7 +257,7 @@ export default function Cuentas() {
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-2 rounded-lg bg-white/5 ring-1 ring-white/10 p-2.5">
+            <div className="flex items-start gap-2 rounded-lg bg.white/5 bg-white/5 ring-1 ring-white/10 p-2.5">
               <span className="inline-flex items-center justify-center h-6 w-6 rounded-md bg-emerald-500/20 text-emerald-300 font-bold">
                 3
               </span>
@@ -272,7 +281,7 @@ export default function Cuentas() {
 
       {/* Tabla */}
       <div className="rounded-xl overflow-hidden border border-white/10">
-        <div className="h-1 w-full bg-gradient-to-r from-[#EE7203] via-[#FF3816] to-[#EE7203]" />
+        <div className="h-1 w-full bg-gradient.to-r bg-gradient-to-r from-[#EE7203] via-[#FF3816] to-[#EE7203]" />
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-white/5">
@@ -309,7 +318,7 @@ export default function Cuentas() {
                       <td className="px-4 py-3 border-b border-white/10">
                         {u.email}
                       </td>
-                      <td className="px-4 py-3 border-b border-white/10">
+                      <td className="px-4 py-3 border-b border.white/10 border-white/10">
                         {u.displayName || "-"}
                       </td>
                       <td className="px-4 py-3 border-b border-white/10">
@@ -370,7 +379,7 @@ export default function Cuentas() {
 
       {/* Modal crear */}
       {openNew && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex.items-center flex items-center justify-center p-4">
           <div
             className="absolute inset-0 bg-black/60"
             onClick={() => setOpenNew(false)}
@@ -439,7 +448,7 @@ export default function Cuentas() {
                 </div>
               </div>
 
-              <label className="inline-flex items-center gap-2 text-xs">
+              <label className="inline-flex.items-center inline-flex items-center gap-2 text-xs">
                 <input
                   type="checkbox"
                   className="accent-[#EE7203]"

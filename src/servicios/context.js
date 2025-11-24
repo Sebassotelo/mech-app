@@ -194,6 +194,23 @@ function Context(props) {
     );
     unsubsRef.current.push(unsubPresupuestos);
 
+    // --- Caja (egresos / movimientos de caja) ---
+    const unsubCaja = onSnapshot(
+      collection(firestore, "caja"),
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        setEgresos(list);
+      },
+      (err) => {
+        console.error("RT caja:", err);
+        setEgresos([]);
+      }
+    );
+    unsubsRef.current.push(unsubCaja);
+
     return () => {
       unsubsRef.current.forEach((u) => {
         try {
@@ -218,7 +235,7 @@ function Context(props) {
         categorias,
         productos,
         ventas,
-        egresos,
+        egresos, // 👈 viene de colección "caja"
         presupuestos,
         presupuestosLoading,
         setCategorias,

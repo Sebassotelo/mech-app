@@ -79,10 +79,13 @@ export default function Ventas({ location = "pv1" }) {
   const [extraFixed, setExtraFixed] = useState(0);
 
   // ====== Descuento (persistente) ======
-  const [applyDiscount, setApplyDiscount] = useState(false);
+  const [applyDiscount, setApplyDiscount] = useState(true);
   const [discountMode, setDiscountMode] = useState("percent");
   const [discountPercent, setDiscountPercent] = useState(0);
   const [discountFixed, setDiscountFixed] = useState(0);
+
+  // 🔁 Flag para no pisar LS antes de cargar
+  const [hydrated, setHydrated] = useState(false);
 
   // ===== Filtro de presupuestos (solo UI) =====
   const [qBudgets, setQBudgets] = useState("");
@@ -95,28 +98,55 @@ export default function Ventas({ location = "pv1" }) {
   // ===== Drawer Carrito
   const [cartOpen, setCartOpen] = useState(false);
 
+  // ==========================
+  // Carga inicial desde localStorage
+  // - Aplica descuento automáticamente si:
+  //   * el método es "efectivo" (por LS o default)
+  //   * y NO había nada guardado para d_apply
+  // ==========================
   useEffect(() => {
     try {
+      // ----- Recargo / pago -----
       const m = localStorage.getItem(LS.method);
       const a = localStorage.getItem(LS.apply);
       const md = localStorage.getItem(LS.mode);
       const p = localStorage.getItem(LS.percent);
       const f = localStorage.getItem(LS.fixed);
-      if (m) setPaymentMethod(m);
-      if (a !== null) setApplyExtra(a === "true");
-      if (md) setExtraMode(md);
-      if (p !== null) setExtraPercent(Number(p) || 0);
-      if (f !== null) setExtraFixed(Number(f) || 0);
 
+      const pm = m || "efectivo";
+      const applyExtraInit = a !== null ? a === "true" : false;
+      const extraModeInit = md || "percent";
+      const extraPercentInit = p !== null ? Number(p) || 0 : 0;
+      const extraFixedInit = f !== null ? Number(f) || 0 : 0;
+
+      // ----- Descuento -----
       const da = localStorage.getItem(LS.d_apply);
       const dm = localStorage.getItem(LS.d_mode);
       const dp = localStorage.getItem(LS.d_percent);
       const df = localStorage.getItem(LS.d_fixed);
-      if (da !== null) setApplyDiscount(da === "true");
-      if (dm) setDiscountMode(dm);
-      if (dp !== null) setDiscountPercent(Number(dp) || 0);
-      if (df !== null) setDiscountFixed(Number(df) || 0);
+
+      // Si no había nada para d_apply, por defecto:
+      // - si es efectivo => descuento aplicado
+      // - si no => sin descuento
+      const applyDiscountInit = da !== null ? da === "true" : pm === "efectivo";
+
+      const discountModeInit = dm || "percent";
+      const discountPercentInit = dp !== null ? Number(dp) || 0 : 0;
+      const discountFixedInit = df !== null ? Number(df) || 0 : 0;
+
+      setPaymentMethod(pm);
+      setApplyExtra(applyExtraInit);
+      setExtraMode(extraModeInit);
+      setExtraPercent(extraPercentInit);
+      setExtraFixed(extraFixedInit);
+
+      setApplyDiscount(applyDiscountInit);
+      setDiscountMode(discountModeInit);
+      setDiscountPercent(discountPercentInit);
+      setDiscountFixed(discountFixedInit);
     } catch {}
+
+    // ----- Columnas -----
     try {
       const saved = localStorage.getItem(LS_COLS);
       if (saved) {
@@ -124,20 +154,32 @@ export default function Ventas({ location = "pv1" }) {
         setCols({ ...DEFAULT_COLS, ...parsed });
       }
     } catch {}
+
+    setHydrated(true);
   }, []);
+
+  // 🔁 Persistir configuración de pago/recargos/descuentos en localStorage
   useEffect(() => {
+    if (!hydrated) return; // hasta no cargar, no escribir
+
     try {
       localStorage.setItem(LS.method, paymentMethod);
       localStorage.setItem(LS.apply, String(applyExtra));
       localStorage.setItem(LS.mode, extraMode);
-      localStorage.setItem(LS.percent, String(extraPercent || 0));
-      localStorage.setItem(LS.fixed, String(extraFixed || 0));
+      localStorage.setItem(
+        LS.percent,
+        String(
+          discountMode === "percent" ? extraPercent ?? 0 : extraPercent ?? 0
+        )
+      ); // extraPercent igual, se guarda tal cual
+      localStorage.setItem(LS.fixed, String(extraFixed ?? 0));
       localStorage.setItem(LS.d_apply, String(applyDiscount));
       localStorage.setItem(LS.d_mode, discountMode);
-      localStorage.setItem(LS.d_percent, String(discountPercent || 0));
-      localStorage.setItem(LS.d_fixed, String(discountFixed || 0));
+      localStorage.setItem(LS.d_percent, String(discountPercent ?? 0));
+      localStorage.setItem(LS.d_fixed, String(discountFixed ?? 0));
     } catch {}
   }, [
+    hydrated,
     paymentMethod,
     applyExtra,
     extraMode,
@@ -148,6 +190,7 @@ export default function Ventas({ location = "pv1" }) {
     discountPercent,
     discountFixed,
   ]);
+
   useEffect(() => {
     try {
       localStorage.setItem(LS_COLS, JSON.stringify(cols));
@@ -258,9 +301,34 @@ export default function Ventas({ location = "pv1" }) {
   }, [subtotal, surchargeAmount, discountAmount]);
 
   /* =========================
+   * Cambio de medio de pago
+   * - efectivo: activa descuento
+   * - otros: solo destilda el descuento, NO resetea montos
+   * ========================= */
+  const handleChangePaymentMethod = (e) => {
+    const value = e.target.value;
+    setPaymentMethod(value);
+
+    if (value === "efectivo") {
+      setApplyDiscount(true);
+      // Si no había nada cargado, dejamos % por defecto
+      if (!discountPercent && !discountFixed) {
+        setDiscountMode("percent");
+      }
+      toast.info("Pago en efectivo: recordá aplicar un descuento.", {
+        description:
+          "Abajo configurás si el descuento es en % o en monto fijo y el valor.",
+      });
+    } else {
+      // Para otros medios, limpiar solo el check del descuento,
+      // pero conservar el valor para reutilizarlo al volver a efectivo.
+      setApplyDiscount(false);
+    }
+  };
+
+  /* =========================
    * Cart ops
    * ========================= */
-  // Reemplazá la función addToCart por esta
   function addToCart(prod) {
     const current = cart[prod.id]?.qty || 0;
     const available = parseInt(prod[stockField] ?? 0, 10);
@@ -270,7 +338,6 @@ export default function Ventas({ location = "pv1" }) {
 
     setCart((c) => ({ ...c, [prod.id]: { prod, qty: nextQty } }));
 
-    // Toast de agregado
     toast.success(`Agregado al carrito: ${prod.name} (x${nextQty})`, {
       description: `Unitario: ${money(finalPrice(prod))}`,
     });
@@ -421,6 +488,7 @@ export default function Ventas({ location = "pv1" }) {
         currency: "ARS",
       },
       paymentLike: {
+        // 🔐 Recargos y descuentos quedan guardados acá
         surcharge: {
           applied: !!applyExtra,
           mode: extraMode,
@@ -742,6 +810,7 @@ export default function Ventas({ location = "pv1" }) {
           method: paymentMethod,
           provider: paymentMethod === "mercadago" ? "mercadopago" : "manual",
           status: "not_started",
+          // 🔐 Recargos y descuentos quedan guardados también en la venta
           surcharge: {
             applied: !!applyExtra,
             mode: extraMode,
@@ -855,12 +924,27 @@ export default function Ventas({ location = "pv1" }) {
     <div className="relative pb-20">
       {/* Controles + Tabla: ocupa todo el ancho */}
       <div className="mb-3 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar producto por nombre / SKU / categoría…"
-          className="w-full sm:flex-1 rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
-        />
+        {/* Input de búsqueda + botón limpiar debajo */}
+        <div className="w-full sm:flex-1 flex flex-col gap-1">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar producto por nombre / SKU / categoría…"
+            className="w-full rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+          />
+          <button
+            type="button"
+            onClick={() => setQ("")}
+            disabled={!q.trim()}
+            className={`inline-flex items-center justify-center rounded-lg border px-2 py-1 text-xs transition ${
+              q.trim()
+                ? "border-white/20 bg-white/5 text-white/80 hover:bg-white/10"
+                : "border-white/5 bg-transparent text-white/30 cursor-not-allowed"
+            }`}
+          >
+            Limpiar búsqueda
+          </button>
+        </div>
 
         <label className="inline-flex items-center gap-2 text-sm text-white/80">
           <input
@@ -949,7 +1033,7 @@ export default function Ventas({ location = "pv1" }) {
         </div>
       </div>
 
-      {/* Tabla md+ (SIN sticky en Acción) */}
+      {/* Tabla md+ */}
       <div
         ref={tableScrollRef}
         className="hidden md:block overflow-x-auto rounded-2xl border border-white/10 select-none cursor-grab active:cursor-grabbing"
@@ -1232,10 +1316,10 @@ export default function Ventas({ location = "pv1" }) {
             <div className="p-4 overflow-y-auto flex-1 space-y-4">
               {/* Pago / Recargo / Descuento */}
               <div className="rounded-xl border border-white/10 p-3 bg-white/5">
-                <p className="text-xs text-white/70 mb-2">Medio de pago</p>
+                <p className="text-xs text-white/70 mb-1.5">Medio de pago</p>
                 <select
                   value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  onChange={handleChangePaymentMethod}
                   className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
                 >
                   {PAYMENT_METHODS.map((m) => (
@@ -1244,6 +1328,26 @@ export default function Ventas({ location = "pv1" }) {
                     </option>
                   ))}
                 </select>
+                <p className="mt-1 text-[11px] text-white/55">
+                  • Usá <span className="font-semibold">Transferencia/QR</span>{" "}
+                  cuando el pago entra directo a la cuenta. <br />•{" "}
+                  <span className="font-semibold">MercadoPago</span> suele tener
+                  recargo (comisión). <br />•{" "}
+                  <span className="font-semibold">Efectivo</span> normalmente
+                  tiene algún descuento, que configurás abajo.
+                </p>
+
+                {paymentMethod === "efectivo" && (
+                  <div className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-2">
+                    <p className="text-[11px] text-emerald-50">
+                      Estás cobrando en <strong>efectivo</strong>. Por costumbre
+                      y para incentivar el pago en mano, suele aplicarse un{" "}
+                      <strong>descuento</strong>. Abajo elegís si el descuento
+                      es en <strong>%</strong> o en <strong>$</strong> y el
+                      monto.
+                    </p>
+                  </div>
+                )}
 
                 {/* Recargo */}
                 <div className="mt-3 space-y-2">
@@ -1256,6 +1360,10 @@ export default function Ventas({ location = "pv1" }) {
                     />
                     Aplicar recargo
                   </label>
+                  <p className="text-[11px] text-white/55">
+                    Usá el recargo para cubrir comisiones (ej: MercadoPago) o
+                    financiación con tarjeta.
+                  </p>
 
                   <div
                     className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
@@ -1308,6 +1416,10 @@ export default function Ventas({ location = "pv1" }) {
                     />
                     Aplicar descuento
                   </label>
+                  <p className="text-[11px] text-white/55">
+                    El descuento se usa, por ejemplo, para pagos en efectivo o
+                    beneficios especiales de cliente.
+                  </p>
 
                   <div
                     className={`grid grid-cols-1 sm:grid-cols-2 gap-2 ${
