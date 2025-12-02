@@ -184,22 +184,7 @@ export default function Inventario() {
     error: "",
   });
 
-  // ====== ID incremental local ====== (legacy, lo dejamos por compatibilidad)
-  const nextLocalIdRef = useRef(null);
-  useEffect(() => {
-    const max = computeMaxId(items, docsSnap);
-    if (nextLocalIdRef.current === null || nextLocalIdRef.current < max + 1) {
-      nextLocalIdRef.current = max + 1;
-    }
-  }, [items, docsSnap]);
-  function getNextLocalId() {
-    if (nextLocalIdRef.current === null) nextLocalIdRef.current = 1;
-    const id = String(nextLocalIdRef.current).padStart(6, "0");
-    nextLocalIdRef.current += 1;
-    return id;
-  }
-
-  // ====== ID random único local ====== (usado en TX)
+  // ====== ID random único local ====== (usado para nuevos productos)
   const sessionIdsRef = useRef(new Set());
   function randomIdRaw() {
     try {
@@ -306,74 +291,63 @@ export default function Inventario() {
     setOpen(true);
   }
 
-  // ======== CREAR con TX ===========
-  async function createProductWithUniqueIdTx(payload) {
+  // ======== CREAR NUEVO PRODUCTO (ID RANDOM + setDoc merge) ===========
+  async function createProductWithRandomId(payload) {
     if (!isAdmin4) return; // 🔒
     if (!firestore) throw new Error("Firestore no disponible");
-    const orderedExistingIds =
-      (docsSnap || []).map((d) => d.id).sort((a, b) => a.localeCompare(b)) ||
-      [];
-    const chunkIdFromIndex = (idx) => String(idx + 1).padStart(3, "0");
 
-    await runTransaction(firestore, async (tx) => {
-      const candidates = [...orderedExistingIds];
-      candidates.push(chunkIdFromIndex(candidates.length));
+    const existingDocs = Array.isArray(docsSnap) ? docsSnap : [];
 
-      let chosenDocId = null;
-      let chosenData = null;
+    // 1) Elegimos chunk con espacio (< CHUNK_LIMIT)
+    let targetDocId = null;
+    let targetDocData = null;
 
-      for (let i = 0; i < candidates.length; i++) {
-        const candidateId = candidates[i];
-        const ref = doc(firestore, "productos", candidateId);
-        let snap = await tx.get(ref);
-        if (!snap.exists()) {
-          tx.set(ref, {});
-          snap = await tx.get(ref);
-        }
-        const data = snap.data() || {};
-        const count = Object.keys(data).filter((k) =>
-          k.startsWith("p_")
-        ).length;
-        if (count < CHUNK_LIMIT) {
-          chosenDocId = candidateId;
-          chosenData = data;
-          break;
-        }
-        if (i === candidates.length - 1) {
-          const newId = chunkIdFromIndex(candidates.length);
-          const newRef = doc(firestore, "productos", newId);
-          tx.set(newRef, {});
-          chosenDocId = newId;
-          chosenData = {};
-          break;
-        }
+    for (const d of existingDocs) {
+      const data = d.data || {};
+      const count = Object.keys(data).filter((k) => k.startsWith("p_")).length;
+      if (count < CHUNK_LIMIT) {
+        targetDocId = d.id;
+        targetDocData = data;
+        break;
       }
+    }
 
-      if (!chosenDocId) throw new Error("No se pudo elegir chunk destino");
+    // Si ninguno tiene espacio, creamos un nuevo chunk (003, 004, etc.)
+    if (!targetDocId) {
+      targetDocId = String(existingDocs.length + 1).padStart(3, "0");
+      targetDocData = {};
+    }
 
-      let newId = getRandomUniqueIdLocal();
-      let tries = 0;
-      const MAX_TRIES = 20;
+    // 2) Generamos ID random que no exista dentro de ese doc
+    let newId = getRandomUniqueIdLocal();
+    let tries = 0;
+    const MAX_TRIES = 20;
 
-      while (tries < MAX_TRIES) {
-        const fieldKey = `p_${newId}`;
-        if (!Object.prototype.hasOwnProperty.call(chosenData, fieldKey)) {
-          const ref = doc(firestore, "productos", chosenDocId);
-          const value = {
-            ...payload,
-            id: newId,
-            chunkDoc: chosenDocId,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          };
-          tx.update(ref, { [fieldKey]: value });
-          return;
-        }
-        newId = getRandomUniqueIdLocal();
-        tries++;
-      }
+    while (
+      tries < MAX_TRIES &&
+      Object.prototype.hasOwnProperty.call(targetDocData, `p_${newId}`)
+    ) {
+      newId = getRandomUniqueIdLocal();
+      tries++;
+    }
+    if (tries >= MAX_TRIES) {
       throw new Error("No se pudo generar un ID único (reintentar).");
-    });
+    }
+
+    const fieldKey = `p_${newId}`;
+    const docRef = doc(firestore, "productos", targetDocId);
+
+    const value = {
+      ...payload,
+      id: newId,
+      chunkDoc: targetDocId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    // 🧠 Igual que el ejemplo de Cursos:
+    // setDoc(docRef, { [fieldKey]: value }, { merge: true })
+    await setDoc(docRef, { [fieldKey]: value }, { merge: true });
   }
 
   // ===== Guardar =====
@@ -387,6 +361,7 @@ export default function Inventario() {
       validate(payload);
       const run = async () => {
         if (editing?.id && editing?.chunkDoc) {
+          // EDITAR → solo actualizamos el campo p_id dentro del doc
           const docRef = doc(firestore, "productos", editing.chunkDoc);
           await updateDoc(docRef, {
             [`p_${editing.id}`]: {
@@ -398,7 +373,8 @@ export default function Inventario() {
             },
           });
         } else {
-          await createProductWithUniqueIdTx(payload);
+          // NUEVO → ID random + setDoc merge al estilo Cursos
+          await createProductWithRandomId(payload);
         }
       };
       await toast.promise(run(), {
@@ -489,13 +465,27 @@ export default function Inventario() {
       // === Normalizar IDs existentes de la base ===
       const byId = new Map();
       const usedIdKeys = new Set();
+
       for (const p of items) {
         const key = normalizeIdForMatch(p.id);
         if (!key) continue;
         if (!byId.has(key)) byId.set(key, p);
         usedIdKeys.add(key);
       }
-      const nextIdCounter = makeNextIdCounter(usedIdKeys);
+
+      // 🆔 Generador de ID RANDOM para import (solo cuando NO viene Id en el Excel)
+      function getRandomIdForImport() {
+        let raw = randomIdRaw(); // helper de arriba
+        let key = normalizeIdForMatch(raw);
+
+        while (!key || usedIdKeys.has(key)) {
+          raw = randomIdRaw();
+          key = normalizeIdForMatch(raw);
+        }
+
+        usedIdKeys.add(key);
+        return raw;
+      }
 
       const counts = new Map(
         docsSnap.map((d) => [
@@ -531,8 +521,8 @@ export default function Inventario() {
           desiredId = rowKey;
           usedIdKeys.add(rowKey);
         } else {
-          // Si no viene ID, generamos uno nuevo (numérico incremental, padded a 6)
-          desiredId = nextIdCounter();
+          // Si no viene ID, generamos uno nuevo RANDOM
+          desiredId = getRandomIdForImport();
         }
 
         const fieldKey = `p_${desiredId}`;
@@ -606,14 +596,17 @@ export default function Inventario() {
         }
       }
 
-      for (const newDocId of docsToInit) {
-        const createRef = doc(firestore, "productos", newDocId);
-        await setDoc(createRef, {});
-      }
+      // ⚠️ Escritura final:
+      // - Docs nuevos → setDoc(docRef, upserts, { merge: true })
+      // - Docs existentes → updateDoc(docRef, upserts)
       let docWrites = 0;
       for (const [docId, upserts] of upsertsByDoc.entries()) {
         const docRef = doc(firestore, "productos", docId);
-        await updateDoc(docRef, upserts);
+        if (docsToInit.has(docId)) {
+          await setDoc(docRef, upserts, { merge: true });
+        } else {
+          await updateDoc(docRef, upserts);
+        }
         docWrites++;
       }
 
@@ -2220,7 +2213,6 @@ const toNum = (v) => {
 const toInt = (v) => parseInt(v || 0, 10);
 const toStr = (n) => (n === 0 || n ? String(n) : "");
 const toStrInt = (n) => (n === 0 || n ? String(n) : "");
-const pad6 = (v) => String(v).replace(/\D/g, "").padStart(6, "0");
 
 // ====== aplanar docs de productos ======
 function flattenProducts(docs) {
@@ -2233,45 +2225,6 @@ function flattenProducts(docs) {
     }
   }
   return out.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-}
-
-// ====== elegir doc con espacio (lectura local) ======
-function pickChunkDoc(docs) {
-  for (const d of docs) {
-    const count = Object.keys(d.data).filter((k) => k.startsWith("p_")).length;
-    if (count < CHUNK_LIMIT) return { id: d.id, isNew: false };
-  }
-  const next = String(docs.length + 1).padStart(3, "0");
-  return { id: next, isNew: true };
-}
-
-/* ====== generar id legible (legacy) ====== */
-function generateId(existingItems) {
-  const nums = existingItems
-    .map((p) => parseInt(String(p.id).replace(/\D/g, ""), 10))
-    .filter((n) => !isNaN(n));
-  const next = nums.length ? Math.max(...nums) + 1 : 1;
-  return String(next).padStart(6, "0");
-}
-
-/* ====== ID helpers ====== */
-function parseIdNum(v) {
-  const n = parseInt(String(v).replace(/\D/g, ""), 10);
-  return isNaN(n) ? 0 : n;
-}
-function computeMaxId(items, docsSnap) {
-  let max = 0;
-  for (const it of items || []) max = Math.max(max, parseIdNum(it?.id));
-  for (const d of docsSnap || []) {
-    const data = d?.data || {};
-    for (const k of Object.keys(data)) {
-      if (!k.startsWith("p_")) continue;
-      const v = data[k];
-      const candidate = parseIdNum(v?.id || k.slice(2));
-      max = Math.max(max, candidate);
-    }
-  }
-  return max;
 }
 
 /* ===================== Helpers Excel/CSV ===================== */
@@ -2383,16 +2336,6 @@ function fmtTitle(label, value) {
   return `${label}: ${v}`;
 }
 
-function makeNextIdCounter(used) {
-  const set = new Set(used);
-  let seq = 1;
-  return function next() {
-    let id = pad6(seq++);
-    while (set.has(id)) id = pad6(seq++);
-    set.add(id);
-    return id;
-  };
-}
 function makeNextChunkName(existingIds = []) {
   const taken = new Set(existingIds);
   return function next() {
