@@ -1,5 +1,6 @@
 // src/componentes/dashboard/inventario/Inventario.jsx
 "use client";
+
 import React, { useContext, useMemo, useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import ContextGeneral from "@/servicios/contextGeneral";
@@ -10,13 +11,13 @@ import {
   serverTimestamp,
   deleteField,
   runTransaction,
-  getDoc,
 } from "firebase/firestore";
-import { FiEdit2, FiTrash2 } from "react-icons/fi";
+import { FiEdit2, FiTrash2, FiLink, FiPlus, FiX } from "react-icons/fi";
 
-const CHUNK_LIMIT = 200;
+const CHUNK_LIMIT = 200; // productos (p_)
+const CHUNK_LIMIT_EQ = 200; // equivalencias (e_)
+const EQ_COLL = "equivalencias";
 
-// === Columnas (persistencia) ===
 const LS_COLS = "mx.inv.columns";
 const DEFAULT_COLS = {
   nombre: true,
@@ -39,7 +40,7 @@ export default function Inventario() {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
 
-  // 🔒 Permisos: solo nivel 4 (Admin) puede crear/editar/eliminar/importar/exportar
+  // 🔒 Permisos: solo nivel 4 (Admin)
   const isAdmin4 = useMemo(() => {
     const p = Array.isArray(ctx?.permisos) ? ctx.permisos : [];
     return p.includes(4);
@@ -49,6 +50,13 @@ export default function Inventario() {
   const docsSnap = ctx?.productosDocs ?? ctx?.productDocs ?? [];
   const itemsCtx = ctx?.productos ?? ctx?.products ?? [];
   const loading = ctx?.productosLoading ?? ctx?.productsLoading ?? false;
+
+  // Equivalencias desde context
+  const equivalenciasDocs = ctx?.equivalenciasDocs ?? [];
+  const equivalenciasLoading = ctx?.equivalenciasLoading ?? false;
+  const getEquivalenceGroupsForProduct =
+    ctx?.getEquivalenceGroupsForProduct || (() => []);
+  const equivalenciasMap = ctx?.equivalenciasMap ?? {};
 
   const items = useMemo(() => {
     if (itemsCtx?.length) return itemsCtx;
@@ -165,9 +173,7 @@ export default function Inventario() {
   useEffect(() => {
     if (!open) return;
     function onKey(e) {
-      if (e.key === "Escape") {
-        setOpen(false);
-      }
+      if (e.key === "Escape") setOpen(false);
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -184,7 +190,7 @@ export default function Inventario() {
     error: "",
   });
 
-  // ====== ID random único local ====== (usado para nuevos productos)
+  // ====== ID random único local ======
   const sessionIdsRef = useRef(new Set());
   function randomIdRaw() {
     try {
@@ -258,13 +264,14 @@ export default function Inventario() {
 
   // ===== Modal =====
   function openCreate() {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     setEditing(null);
     setForm(blankProduct());
     setOpen(true);
   }
+
   function openEdit(prod) {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     setEditing(prod);
     setForm({
       ...blankProduct(),
@@ -287,13 +294,26 @@ export default function Inventario() {
       taxable: prod.taxable !== false,
       enabled: prod.enabled !== false,
       discountActive: !!prod.discountActive,
+      equivalences: Array.isArray(prod.equivalences) ? prod.equivalences : [],
     });
     setOpen(true);
   }
 
+  // ✅ Helper: leer data tanto de DocumentSnapshot como de objeto {data}
+  function snapData(d) {
+    try {
+      if (!d) return {};
+      if (typeof d.data === "function") return d.data() || {};
+      if (d.data && typeof d.data === "object") return d.data || {};
+      return {};
+    } catch {
+      return {};
+    }
+  }
+
   // ======== CREAR NUEVO PRODUCTO (ID RANDOM + setDoc merge) ===========
   async function createProductWithRandomId(payload) {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     if (!firestore) throw new Error("Firestore no disponible");
 
     const existingDocs = Array.isArray(docsSnap) ? docsSnap : [];
@@ -303,7 +323,7 @@ export default function Inventario() {
     let targetDocData = null;
 
     for (const d of existingDocs) {
-      const data = d.data || {};
+      const data = snapData(d);
       const count = Object.keys(data).filter((k) => k.startsWith("p_")).length;
       if (count < CHUNK_LIMIT) {
         targetDocId = d.id;
@@ -312,7 +332,7 @@ export default function Inventario() {
       }
     }
 
-    // Si ninguno tiene espacio, creamos un nuevo chunk (003, 004, etc.)
+    // Si ninguno tiene espacio, creamos un nuevo chunk
     if (!targetDocId) {
       targetDocId = String(existingDocs.length + 1).padStart(3, "0");
       targetDocData = {};
@@ -321,7 +341,7 @@ export default function Inventario() {
     // 2) Generamos ID random que no exista dentro de ese doc
     let newId = getRandomUniqueIdLocal();
     let tries = 0;
-    const MAX_TRIES = 20;
+    const MAX_TRIES = 30;
 
     while (
       tries < MAX_TRIES &&
@@ -345,15 +365,13 @@ export default function Inventario() {
       updatedAt: serverTimestamp(),
     };
 
-    // 🧠 Igual que el ejemplo de Cursos:
-    // setDoc(docRef, { [fieldKey]: value }, { merge: true })
     await setDoc(docRef, { [fieldKey]: value }, { merge: true });
   }
 
   // ===== Guardar =====
   async function handleSave(e) {
     e?.preventDefault?.();
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     if (!firestore) return toast.error("Firestore no disponible");
 
     const payload = normalizeForSave(form);
@@ -361,7 +379,6 @@ export default function Inventario() {
       validate(payload);
       const run = async () => {
         if (editing?.id && editing?.chunkDoc) {
-          // EDITAR → solo actualizamos el campo p_id dentro del doc
           const docRef = doc(firestore, "productos", editing.chunkDoc);
           await updateDoc(docRef, {
             [`p_${editing.id}`]: {
@@ -373,7 +390,6 @@ export default function Inventario() {
             },
           });
         } else {
-          // NUEVO → ID random + setDoc merge al estilo Cursos
           await createProductWithRandomId(payload);
         }
       };
@@ -393,7 +409,7 @@ export default function Inventario() {
 
   // ===== Borrar =====
   async function handleDelete(prod) {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     if (!firestore) return toast.error("Firestore no disponible");
     if (!confirm("¿Eliminar el producto?")) return;
     try {
@@ -411,9 +427,462 @@ export default function Inventario() {
     }
   }
 
-  // ===== Import (xlsx/csv) =====
+  // =========================================================
+  // =============== EQUIVALENCIAS (chunked) ==================
+  // =========================================================
+
+  function safeProdKey(p) {
+    const cd = String(p?.chunkDoc || "");
+    const id = String(p?.id || "");
+    if (!cd || !id) return "";
+    return `${cd}_${id}`;
+  }
+
+  // elegir chunk para equivalencias (FIX: snapData)
+  function pickEquivalenceChunkDocId() {
+    const docs = Array.isArray(equivalenciasDocs) ? equivalenciasDocs : [];
+    for (const d of docs) {
+      const data = snapData(d);
+      const count = Object.keys(data).filter((k) => k.startsWith("e_")).length;
+      if (count < CHUNK_LIMIT_EQ) return d.id;
+    }
+    const next = makeNextChunkName(docs.map((d) => d.id));
+    return next();
+  }
+
+  function normalizeEquivalenceRefs(arr) {
+    const out = [];
+    const seen = new Set();
+    (Array.isArray(arr) ? arr : []).forEach((r) => {
+      const code = String(r?.code || "").trim();
+      const chunkDoc = String(r?.chunkDoc || "").trim();
+      if (!code || !chunkDoc) return;
+      const key = `${chunkDoc}__${code}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ code, chunkDoc });
+    });
+    out.sort((a, b) => a.code.localeCompare(b.code));
+    return out;
+  }
+
+  async function txGetProduct(tx, p) {
+    const cd = p?.chunkDoc;
+    const id = p?.id;
+    if (!cd || !id) throw new Error("Producto inválido (chunkDoc/id).");
+    const ref = doc(firestore, "productos", cd);
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("No existe el doc de productos: " + cd);
+    const data = snap.data() || {};
+    const obj = data[`p_${id}`];
+    if (!obj) throw new Error("No existe el producto p_" + id);
+    return { ref, data, obj };
+  }
+
+  async function txWriteProductEquivalences(tx, p, nextRefs) {
+    const cd = p?.chunkDoc;
+    const id = p?.id;
+    if (!cd || !id) throw new Error("Producto inválido (chunkDoc/id).");
+
+    const ref = doc(firestore, "productos", cd);
+    tx.update(ref, {
+      [`p_${id}.equivalences`]: normalizeEquivalenceRefs(nextRefs),
+      [`p_${id}.updatedAt`]: serverTimestamp(),
+    });
+  }
+
+  async function txGetEquivalence(tx, eqChunkDoc, code) {
+    const eqRef = doc(firestore, EQ_COLL, eqChunkDoc);
+    const eqSnap = await tx.get(eqRef);
+    const eqData = eqSnap.exists() ? eqSnap.data() || {} : {};
+    const fieldKey = `e_${code}`;
+    const eqObj = eqData?.[fieldKey] || null;
+    return { eqRef, eqSnap, eqData, fieldKey, eqObj };
+  }
+
+  function uniqMembers(list) {
+    const out = [];
+    const seen = new Set();
+    (Array.isArray(list) ? list : []).forEach((m) => {
+      const cd = String(m?.chunkDoc || "");
+      const id = String(m?.id || "");
+      if (!cd || !id) return;
+      const k = `${cd}_${id}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push({ chunkDoc: cd, id });
+    });
+    return out;
+  }
+
+  function removeMember(members, p) {
+    const cd = String(p?.chunkDoc || "");
+    const id = String(p?.id || "");
+    return (Array.isArray(members) ? members : []).filter(
+      (m) => !(String(m?.chunkDoc || "") === cd && String(m?.id || "") === id)
+    );
+  }
+
+  function newEquivalenceCode() {
+    return `EQ-${randomIdRaw().slice(0, 8)}`;
+  }
+
+  // ===== UI state picker =====
+  const [eqPickerOpen, setEqPickerOpen] = useState(false);
+  const [eqPickerMode, setEqPickerMode] = useState("create"); // create | addTo
+  const [eqPickerTargetCode, setEqPickerTargetCode] = useState("");
+  const [eqPickerTargetChunk, setEqPickerTargetChunk] = useState("");
+  const [eqSearch, setEqSearch] = useState("");
+
+  function openPickerCreate() {
+    setEqPickerMode("create");
+    setEqPickerTargetCode("");
+    setEqPickerTargetChunk("");
+    setEqSearch("");
+    setEqPickerOpen(true);
+  }
+
+  function openPickerAddTo(code, chunkDoc) {
+    setEqPickerMode("addTo");
+    setEqPickerTargetCode(String(code || ""));
+    setEqPickerTargetChunk(String(chunkDoc || ""));
+    setEqSearch("");
+    setEqPickerOpen(true);
+  }
+
+  function closePicker() {
+    setEqPickerOpen(false);
+    setEqSearch("");
+    setEqPickerTargetCode("");
+    setEqPickerTargetChunk("");
+  }
+
+  const eqPickCandidates = useMemo(() => {
+    const current = editing || null;
+    const currentKey = current ? safeProdKey(current) : "";
+    const t = String(eqSearch || "")
+      .trim()
+      .toLowerCase();
+
+    return items
+      .filter((p) => {
+        const k = safeProdKey(p);
+        if (!k) return false;
+        if (currentKey && k === currentKey) return false;
+        const inText =
+          !t ||
+          p.name?.toLowerCase().includes(t) ||
+          p.sku?.toLowerCase().includes(t) ||
+          p.category?.toLowerCase().includes(t) ||
+          p.provider?.toLowerCase?.().includes(t);
+        return inText;
+      })
+      .slice(0, 50);
+  }, [items, eqSearch, editing]);
+
+  // ===== Acciones equivalencias =====
+  async function createEquivalenceWith(otherProd) {
+    if (!isAdmin4) return;
+    if (!firestore) return toast.error("Firestore no disponible");
+    if (!editing?.id || !editing?.chunkDoc)
+      return toast.error("Guardá el producto antes de crear equivalencias.");
+    if (!otherProd?.id || !otherProd?.chunkDoc)
+      return toast.error("Producto equivalente inválido.");
+
+    const a = { id: editing.id, chunkDoc: editing.chunkDoc };
+    const b = { id: otherProd.id, chunkDoc: otherProd.chunkDoc };
+
+    // code único respecto al map del context
+    let code = newEquivalenceCode();
+    let guard = 0;
+    while (equivalenciasMap?.[code] && guard < 40) {
+      code = newEquivalenceCode();
+      guard++;
+    }
+    if (guard >= 40) return toast.error("No se pudo generar un código único.");
+
+    const eqChunkDoc = pickEquivalenceChunkDocId();
+
+    const run = async () => {
+      await runTransaction(firestore, async (tx) => {
+        const aSnap = await txGetProduct(tx, a);
+        const bSnap = await txGetProduct(tx, b);
+
+        const aRefs = Array.isArray(aSnap.obj?.equivalences)
+          ? aSnap.obj.equivalences
+          : [];
+        const bRefs = Array.isArray(bSnap.obj?.equivalences)
+          ? bSnap.obj.equivalences
+          : [];
+
+        const aCodes = new Set(aRefs.map((r) => r?.code).filter(Boolean));
+        const bCodes = new Set(bRefs.map((r) => r?.code).filter(Boolean));
+        let already = false;
+        aCodes.forEach((c) => {
+          if (bCodes.has(c)) already = true;
+        });
+        if (already) throw new Error("Estos productos ya son equivalentes.");
+
+        const { eqRef, eqSnap, fieldKey } = await txGetEquivalence(
+          tx,
+          eqChunkDoc,
+          code
+        );
+        const eqObj = {
+          code,
+          chunkDoc: eqChunkDoc,
+          members: uniqMembers([a, b]),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: ctx?.user?.email || "",
+        };
+
+        if (eqSnap.exists()) {
+          tx.update(eqRef, { [fieldKey]: eqObj });
+        } else {
+          tx.set(eqRef, { [fieldKey]: eqObj }, { merge: true });
+        }
+
+        const refA = { code, chunkDoc: eqChunkDoc };
+        const nextA = normalizeEquivalenceRefs([...aRefs, refA]);
+        const nextB = normalizeEquivalenceRefs([...bRefs, refA]);
+
+        await txWriteProductEquivalences(tx, a, nextA);
+        await txWriteProductEquivalences(tx, b, nextB);
+      });
+
+      setForm((prev) => ({
+        ...prev,
+        equivalences: normalizeEquivalenceRefs([
+          ...(Array.isArray(prev?.equivalences) ? prev.equivalences : []),
+          { code, chunkDoc: eqChunkDoc },
+        ]),
+      }));
+    };
+
+    await toast.promise(run(), {
+      loading: "Creando equivalencia…",
+      success: "Equivalencia creada",
+      error: (e) => e?.message || "No se pudo crear la equivalencia",
+    });
+  }
+
+  async function addProductToExistingCode(code, chunkDoc, otherProd) {
+    if (!isAdmin4) return;
+    if (!firestore) return toast.error("Firestore no disponible");
+    if (!editing?.id || !editing?.chunkDoc)
+      return toast.error("Guardá el producto antes de editar equivalencias.");
+    if (!code || !chunkDoc) return toast.error("Código inválido.");
+    if (!otherProd?.id || !otherProd?.chunkDoc)
+      return toast.error("Producto inválido.");
+
+    const a = { id: editing.id, chunkDoc: editing.chunkDoc };
+    const b = { id: otherProd.id, chunkDoc: otherProd.chunkDoc };
+
+    const run = async () => {
+      await runTransaction(firestore, async (tx) => {
+        const aSnap = await txGetProduct(tx, a);
+        const bSnap = await txGetProduct(tx, b);
+
+        const aRefs = Array.isArray(aSnap.obj?.equivalences)
+          ? aSnap.obj.equivalences
+          : [];
+        const bRefs = Array.isArray(bSnap.obj?.equivalences)
+          ? bSnap.obj.equivalences
+          : [];
+
+        const { eqRef, eqSnap, fieldKey, eqObj } = await txGetEquivalence(
+          tx,
+          chunkDoc,
+          code
+        );
+
+        if (!eqSnap.exists())
+          throw new Error("No existe el chunk de equivalencia");
+        if (!eqObj) throw new Error("No existe el código de equivalencia");
+
+        const members = Array.isArray(eqObj.members) ? eqObj.members : [];
+        const nextMembers = uniqMembers([
+          ...members,
+          { chunkDoc: a.chunkDoc, id: a.id },
+          { chunkDoc: b.chunkDoc, id: b.id },
+        ]);
+
+        const nextEq = {
+          ...eqObj,
+          members: nextMembers,
+          updatedAt: serverTimestamp(),
+        };
+
+        tx.update(eqRef, { [fieldKey]: nextEq });
+
+        const ref = { code, chunkDoc };
+        const nextA = normalizeEquivalenceRefs([...aRefs, ref]);
+        const nextB = normalizeEquivalenceRefs([...bRefs, ref]);
+
+        await txWriteProductEquivalences(tx, a, nextA);
+        await txWriteProductEquivalences(tx, b, nextB);
+      });
+
+      setForm((prev) => ({
+        ...prev,
+        equivalences: normalizeEquivalenceRefs([
+          ...(Array.isArray(prev?.equivalences) ? prev.equivalences : []),
+          { code, chunkDoc },
+        ]),
+      }));
+    };
+
+    await toast.promise(run(), {
+      loading: "Agregando al código…",
+      success: "Producto agregado al código",
+      error: (e) => e?.message || "No se pudo agregar",
+    });
+  }
+
+  async function removeMemberFromCode(code, chunkDoc, member) {
+    if (!isAdmin4) return;
+    if (!firestore) return toast.error("Firestore no disponible");
+    if (!code || !chunkDoc) return toast.error("Código inválido.");
+    if (!member?.id || !member?.chunkDoc)
+      return toast.error("Miembro inválido.");
+
+    if (!confirm(`¿Quitar este producto del código ${code}?`)) return;
+
+    const target = { id: member.id, chunkDoc: member.chunkDoc };
+
+    const run = async () => {
+      let orphaned = false;
+      let selfShouldLoseRef = false;
+
+      await runTransaction(firestore, async (tx) => {
+        // =========================
+        // 1) READS (ALL FIRST)
+        // =========================
+
+        // Leer equivalencia
+        const { eqRef, eqSnap, fieldKey, eqObj } = await txGetEquivalence(
+          tx,
+          chunkDoc,
+          code
+        );
+        if (!eqSnap.exists())
+          throw new Error("No existe el chunk de equivalencia");
+        if (!eqObj) throw new Error("No existe el código de equivalencia");
+
+        const members = Array.isArray(eqObj.members) ? eqObj.members : [];
+        const nextMembers = removeMember(members, target);
+
+        // Leer producto target (el que sacás)
+        const targetSnap = await txGetProduct(tx, target);
+        const tRefs = Array.isArray(targetSnap.obj?.equivalences)
+          ? targetSnap.obj.equivalences
+          : [];
+        const nextTRefs = normalizeEquivalenceRefs(
+          tRefs.filter((r) => String(r?.code || "") !== String(code))
+        );
+
+        // Si queda huérfano, necesitamos leer todos los productos restantes ANTES de escribir
+        const remainingReads = [];
+        if (nextMembers.length < 2) {
+          orphaned = true;
+
+          for (const m of nextMembers) {
+            const p = { id: m.id, chunkDoc: m.chunkDoc };
+            const pSnap = await txGetProduct(tx, p);
+            const pRefs = Array.isArray(pSnap.obj?.equivalences)
+              ? pSnap.obj.equivalences
+              : [];
+            const cleaned = normalizeEquivalenceRefs(
+              pRefs.filter((r) => String(r?.code || "") !== String(code))
+            );
+
+            remainingReads.push({ p, cleaned });
+
+            // marcar si el restante es el producto actual en edición (para limpiar el form local)
+            const isSelfRemaining =
+              String(p.chunkDoc) === String(editing?.chunkDoc || "") &&
+              String(p.id) === String(editing?.id || "");
+            if (isSelfRemaining) selfShouldLoseRef = true;
+          }
+        }
+
+        // =========================
+        // 2) WRITES (ALL AFTER READS)
+        // =========================
+
+        // a) sacar ref del producto target
+        await txWriteProductEquivalences(tx, target, nextTRefs);
+
+        if (!orphaned) {
+          // b) actualizar equivalencia con members restantes
+          const nextEq = {
+            ...eqObj,
+            members: uniqMembers(nextMembers),
+            updatedAt: serverTimestamp(),
+          };
+          tx.update(eqRef, { [fieldKey]: nextEq });
+        } else {
+          // b) borrar equivalencia (queda huérfana)
+          tx.update(eqRef, { [fieldKey]: deleteField() });
+
+          // c) limpiar refs en restantes (si queda 1)
+          for (const rr of remainingReads) {
+            await txWriteProductEquivalences(tx, rr.p, rr.cleaned);
+          }
+        }
+      });
+
+      // =========================
+      // 3) UI local (fuera de la TX)
+      // =========================
+      const isSelfRemoved =
+        String(target.chunkDoc) === String(editing?.chunkDoc || "") &&
+        String(target.id) === String(editing?.id || "");
+
+      // limpiar el form si:
+      // - me removí a mí mismo
+      // - o quedó huérfano y yo era el restante (me limpiaron server-side)
+      if (isSelfRemoved || (orphaned && selfShouldLoseRef)) {
+        setForm((prev) => ({
+          ...prev,
+          equivalences: normalizeEquivalenceRefs(
+            (Array.isArray(prev?.equivalences) ? prev.equivalences : []).filter(
+              (r) => String(r?.code || "") !== String(code)
+            )
+          ),
+        }));
+      }
+    };
+
+    await toast.promise(run(), {
+      loading: "Quitando equivalencia…",
+      success: "Actualizado",
+      error: (e) => e?.message || "No se pudo quitar",
+    });
+  }
+
+  // ===== UI: grupos equivalencias para el producto editado =====
+  const eqGroups = useMemo(() => {
+    if (!editing?.id || !editing?.chunkDoc) return [];
+    const prodForGroups = {
+      ...editing,
+      equivalences: Array.isArray(form?.equivalences) ? form.equivalences : [],
+    };
+    return getEquivalenceGroupsForProduct(prodForGroups);
+  }, [
+    editing,
+    form?.equivalences,
+    getEquivalenceGroupsForProduct,
+    equivalenciasMap,
+  ]);
+
+  // =========================================================
+  // ===================== IMPORT / EXPORT ====================
+  // =========================================================
+
   async function handleImportExcel(ev) {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     const file = ev.target.files?.[0];
     ev.target.value = "";
     if (!file) return;
@@ -473,27 +942,26 @@ export default function Inventario() {
         usedIdKeys.add(key);
       }
 
-      // 🆔 Generador de ID RANDOM para import (solo cuando NO viene Id en el Excel)
       function getRandomIdForImport() {
-        let raw = randomIdRaw(); // helper de arriba
+        let raw = randomIdRaw();
         let key = normalizeIdForMatch(raw);
-
         while (!key || usedIdKeys.has(key)) {
           raw = randomIdRaw();
           key = normalizeIdForMatch(raw);
         }
-
         usedIdKeys.add(key);
         return raw;
       }
 
       const counts = new Map(
-        docsSnap.map((d) => [
+        (Array.isArray(docsSnap) ? docsSnap : []).map((d) => [
           d.id,
-          Object.keys(d.data || {}).filter((k) => k.startsWith("p_")).length,
+          Object.keys(snapData(d)).filter((k) => k.startsWith("p_")).length,
         ])
       );
-      const nextChunkName = makeNextChunkName(docsSnap.map((d) => d.id));
+      const nextChunkName = makeNextChunkName(
+        (Array.isArray(docsSnap) ? docsSnap : []).map((d) => d.id)
+      );
 
       const upsertsByDoc = new Map();
       const docsToInit = new Set();
@@ -508,20 +976,16 @@ export default function Inventario() {
       };
 
       for (const r of mapped) {
-        // 🔁 Normalizamos el ID que viene del Excel
         const rowKey = normalizeIdForMatch(r.id);
         const existing = rowKey ? byId.get(rowKey) : undefined;
 
         let desiredId;
         if (existing) {
-          // Si ya existe en la base, usamos el ID que tiene en Firestore
           desiredId = existing.id;
         } else if (rowKey) {
-          // Si viene un ID en el Excel pero no existe en la base, usamos ese ID normalizado
           desiredId = rowKey;
           usedIdKeys.add(rowKey);
         } else {
-          // Si no viene ID, generamos uno nuevo RANDOM
           desiredId = getRandomIdForImport();
         }
 
@@ -548,6 +1012,9 @@ export default function Inventario() {
             r.showInPurchases ?? existing?.showInPurchases ?? true,
           priceDiscount: r.priceDiscount ?? existing?.priceDiscount ?? 0,
           discountActive: r.discountActive ?? existing?.discountActive ?? false,
+          equivalences: Array.isArray(existing?.equivalences)
+            ? existing.equivalences
+            : [],
         });
 
         validate(payload);
@@ -596,9 +1063,6 @@ export default function Inventario() {
         }
       }
 
-      // ⚠️ Escritura final:
-      // - Docs nuevos → setDoc(docRef, upserts, { merge: true })
-      // - Docs existentes → updateDoc(docRef, upserts)
       let docWrites = 0;
       for (const [docId, upserts] of upsertsByDoc.entries()) {
         const docRef = doc(firestore, "productos", docId);
@@ -623,9 +1087,8 @@ export default function Inventario() {
     }
   }
 
-  // ===== Export Excel (mismo formato que espera el import) =====
   async function handleExportXLSX() {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     try {
       const ExcelJS = (await import("exceljs")).default;
       const wb = new ExcelJS.Workbook();
@@ -719,9 +1182,8 @@ export default function Inventario() {
     }
   }
 
-  // ===== Exportar PLANTILLA vacía =====
   async function handleExportTemplateXLSX() {
-    if (!isAdmin4) return; // 🔒
+    if (!isAdmin4) return;
     try {
       const ExcelJS = (await import("exceljs")).default;
       const wb = new ExcelJS.Workbook();
@@ -859,7 +1321,7 @@ export default function Inventario() {
           </LabelPill>
         </div>
 
-        {/* Botones de Admin: Importar / Exportar / Plantilla / Nuevo (ocultos si !isAdmin4) */}
+        {/* Botones de Admin */}
         {isAdmin4 && (
           <div className="flex flex-wrap gap-1.5">
             <label
@@ -878,7 +1340,7 @@ export default function Inventario() {
             <button
               onClick={handleExportXLSX}
               title="Exportar todo el inventario a Excel"
-              className="px-3 py-1.5 rounded-lg bg:white/10 bg-white/10 hover:bg-white/15 text-sm"
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
             >
               Exportar Excel
             </button>
@@ -899,7 +1361,7 @@ export default function Inventario() {
               Nuevo
             </button>
 
-            {/* Selector de columnas (a la derecha) */}
+            {/* Selector de columnas */}
             <div className="relative">
               <button
                 ref={colsBtnRef}
@@ -973,7 +1435,7 @@ export default function Inventario() {
 
       {/* Loader/Progreso de import */}
       {isAdmin4 && imp.running && (
-        <div className="rounded-xl border border-white/10 bg:white/5 bg-white/5 p-3 text-sm">
+        <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
           <div className="flex items-center justify-between mb-2">
             <div className="font-medium">Importando: {imp.filename}</div>
             <div className="text-white/70">
@@ -1015,7 +1477,6 @@ export default function Inventario() {
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex items-start gap-2">
-                  {/* Botón editar solo admin */}
                   {isAdmin4 && (
                     <IconGhost
                       title="Editar producto"
@@ -1066,7 +1527,6 @@ export default function Inventario() {
                 <Info label="Stock PV2" value={String(p.stockPv2 ?? 0)} />
               </div>
 
-              {/* Acciones (Eliminar) solo admin */}
               {isAdmin4 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   <IconBtn
@@ -1153,7 +1613,6 @@ export default function Inventario() {
                 {cols.activo && (
                   <Th className="w-[90px] text-center">Activo</Th>
                 )}
-                {/* Columna Acciones solo si admin y si está habilitada en columnas */}
                 {isAdmin4 && cols.acciones && (
                   <Th className="w-[-webkit-fill-available] w-[140px] text-center">
                     Acciones
@@ -1183,7 +1642,6 @@ export default function Inventario() {
                     {cols.nombre && (
                       <Td className="sticky left-0 z-10" stickyBg>
                         <div className="flex items-start gap-2 min-w-0">
-                          {/* Edit solo admin */}
                           {isAdmin4 && (
                             <IconGhost
                               title="Editar producto"
@@ -1310,7 +1768,6 @@ export default function Inventario() {
                         <Dot ok={p.enabled !== false} />
                       </Td>
                     )}
-                    {/* Acciones solo admin */}
                     {isAdmin4 && cols.acciones && (
                       <Td className="text-center">
                         <div className="flex items-center justify-center gap-1.5 flex-wrap">
@@ -1374,12 +1831,11 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* Modal Crear/Editar — solo se abre si isAdmin4 */}
+      {/* Modal Crear/Editar */}
       {isAdmin4 && open && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
           onMouseDown={(e) => {
-            // cerrar si se hace click en el overlay (afuera del modal)
             if (modalRef.current && !modalRef.current.contains(e.target)) {
               setOpen(false);
             }
@@ -1388,7 +1844,7 @@ export default function Inventario() {
           <div
             ref={modalRef}
             onMouseDown={(e) => e.stopPropagation()}
-            className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h[85vh] max-h-[85vh] overflow-y-auto"
+            className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h-[85vh] overflow-y-auto"
             role="dialog"
           >
             <div className="p-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#112C3E]/95 backdrop-blur">
@@ -1506,8 +1962,7 @@ export default function Inventario() {
                   title="Precio de venta normal al público (lista)"
                 />
                 <p className="mt-1 text-[11px] text-white/60">
-                  Este es el precio de venta normal al público. No distingue
-                  contado / tarjeta, es el precio de lista del producto.
+                  Precio de lista. Contado/tarjeta se maneja aparte.
                 </p>
               </Field>
 
@@ -1535,17 +1990,13 @@ export default function Inventario() {
                   }
                   className="inp"
                   placeholder="0.00"
-                  title="Precio cuando el producto está en oferta/promoción (no es precio de contado)"
+                  title="Precio cuando el producto está en oferta/promoción"
                 />
                 <p className="mt-1 text-[11px] text-white/60">
-                  Usá este campo solo cuando el producto esté en oferta o
-                  promoción. <strong>No es el precio al contado</strong>, es un
-                  precio promocional que reemplaza al precio de venta mientras
-                  el descuento esté activo.
+                  Solo promo. No es “contado”.
                 </p>
               </Field>
 
-              {/* ACTIVABLES */}
               <Field label="Descuento activo">
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-2">
@@ -1557,27 +2008,21 @@ export default function Inventario() {
                     <span className="text-[11px] text-white/60">
                       {toNum(form.priceDiscount) > 0
                         ? form.discountActive
-                          ? "Cuando está activo, en las ventas se usa el Precio con descuento en lugar del Precio de Venta."
-                          : "Desactivado. Se usa el Precio de Venta normal."
-                        : "Ingresá Precio con descuento para poder activar la promo."}
+                          ? "En ventas se usa el precio con descuento."
+                          : "Se usa el precio normal."
+                        : "Ingresá precio con descuento para poder activar."}
                     </span>
                   </div>
                 </div>
               </Field>
 
-              {/* Bloque de aclaración general sobre precios */}
               <div className="sm:col-span-2 md:col-span-3">
                 <div className="rounded-lg border border-white/15 bg-white/5 p-2">
                   <p className="text-[11px] text-white/70 leading-snug">
                     <span className="font-semibold">Resumen:</span>{" "}
-                    <span className="underline">Precio de Venta</span> es el
-                    precio normal de venta al público (lista).{" "}
-                    <span className="underline">Precio con descuento</span> se
-                    usa únicamente cuando el producto está en{" "}
-                    <strong>oferta/promoción</strong> y tenés el{" "}
-                    <strong>Descuento activo</strong>. Ese precio promocional{" "}
-                    <strong>NO es el precio al contado</strong>, las condiciones
-                    de pago se manejan aparte.
+                    <span className="underline">Precio de Venta</span> = lista.{" "}
+                    <span className="underline">Precio con descuento</span> =
+                    promo si <strong>Descuento activo</strong>.
                   </p>
                 </div>
               </div>
@@ -1669,6 +2114,138 @@ export default function Inventario() {
                 />
               </Field>
 
+              {/* ===================== EQUIVALENCIAS UI ===================== */}
+              <div className="md:col-span-3 pt-2">
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <FiLink className="w-4 h-4 text-white/70" />
+                        <h4 className="font-semibold">Equivalencias</h4>
+                      </div>
+                      <p className="text-[11px] text-white/60 mt-1">
+                        Dos productos son equivalentes solo si comparten el
+                        mismo <span className="font-mono">code</span>. No hay
+                        transitividad entre códigos distintos.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={openPickerCreate}
+                      disabled={!editing?.id || equivalenciasLoading}
+                      className="shrink-0 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-gradient-to-r from-[#EE7203] to-[#FF3816] disabled:opacity-50"
+                      title={
+                        editing?.id
+                          ? "Crear un nuevo código de equivalencia y agregar un producto"
+                          : "Primero guardá el producto para crear equivalencias"
+                      }
+                    >
+                      <FiPlus className="w-4 h-4" />
+                      Crear código
+                    </button>
+                  </div>
+
+                  {!editing?.id ? (
+                    <div className="mt-3 text-sm text-white/70">
+                      Guardá el producto para poder administrar equivalencias.
+                    </div>
+                  ) : eqGroups.length === 0 ? (
+                    <div className="mt-3 text-sm text-white/70">
+                      Sin equivalencias cargadas.
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {eqGroups.map((g) => (
+                        <div
+                          key={`${g.chunkDoc}_${g.code}`}
+                          className="rounded-lg border border-white/10 bg-[#0C212D]/60 p-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-xs text-white/60">
+                                Código
+                              </div>
+                              <div className="font-mono text-sm">{g.code}</div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openPickerAddTo(g.code, g.chunkDoc)
+                              }
+                              className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-white/10 hover:bg-white/15 text-xs"
+                              title="Agregar un producto a este código"
+                            >
+                              <FiPlus className="w-4 h-4" />
+                              Agregar
+                            </button>
+                          </div>
+
+                          <div className="mt-2 grid gap-1">
+                            {g.members.map((m) => {
+                              const isSelf =
+                                String(m.chunkDoc) ===
+                                  String(editing.chunkDoc) &&
+                                String(m.id) === String(editing.id);
+                              return (
+                                <div
+                                  key={m.key}
+                                  className="flex items-center justify-between gap-2 rounded-md border border-white/10 bg-white/5 px-2 py-1.5"
+                                >
+                                  <div className="min-w-0">
+                                    <div
+                                      className="text-sm truncate"
+                                      title={m.name}
+                                    >
+                                      {m.name}
+                                      {isSelf && (
+                                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/70">
+                                          actual
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[11px] text-white/60 truncate">
+                                      <span className="font-mono">
+                                        {m.sku || "-"}
+                                      </span>
+                                      {" • "}
+                                      {m.category || "-"}
+                                      {m.provider ? ` • ${m.provider}` : ""}
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      removeMemberFromCode(g.code, g.chunkDoc, {
+                                        id: m.id,
+                                        chunkDoc: m.chunkDoc,
+                                      })
+                                    }
+                                    className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/15 text-red-300 hover:bg-red-500/25 text-xs"
+                                    title="Quitar de este código"
+                                  >
+                                    <FiX className="w-4 h-4" />
+                                    Quitar
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="mt-2 text-[11px] text-white/50">
+                            Si el código queda con menos de 2 productos, se
+                            elimina automáticamente.
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer botones */}
               <div className="md:col-span-3 flex items-center justify-end gap-1.5 pt-2">
                 <button
                   type="button"
@@ -1687,6 +2264,117 @@ export default function Inventario() {
                 </button>
               </div>
             </form>
+
+            {/* ===== Picker overlay ===== */}
+            {eqPickerOpen && (
+              <div
+                className="fixed inset-0 z-[60] bg-black/60 grid place-items-center p-4"
+                onMouseDown={(e) => {
+                  if (e.target === e.currentTarget) closePicker();
+                }}
+              >
+                <div
+                  className="w-full max-w-2xl rounded-xl border border-white/10 bg-[#112C3E] shadow-2xl overflow-hidden"
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <div className="p-3 border-b border-white/10 flex items-center justify-between">
+                    <div className="min-w-0">
+                      <div className="font-semibold">
+                        {eqPickerMode === "create"
+                          ? "Crear equivalencia (nuevo código)"
+                          : `Agregar al código ${eqPickerTargetCode}`}
+                      </div>
+                      <div className="text-[11px] text-white/60 mt-0.5">
+                        Buscá el producto equivalente por nombre / código /
+                        proveedor / tipo.
+                      </div>
+                    </div>
+                    <button
+                      className="text-white/70 hover:text-white"
+                      onClick={closePicker}
+                      title="Cerrar"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="p-3">
+                    <input
+                      className="inp"
+                      placeholder="Buscar producto…"
+                      value={eqSearch}
+                      onChange={(e) => setEqSearch(e.target.value)}
+                    />
+
+                    <div className="mt-3 max-h-[55vh] overflow-y-auto rounded-lg border border-white/10">
+                      {eqPickCandidates.length === 0 ? (
+                        <div className="p-4 text-sm text-white/60">
+                          Sin resultados.
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-white/10">
+                          {eqPickCandidates.map((p) => (
+                            <button
+                              key={`${p.chunkDoc}_${p.id}`}
+                              type="button"
+                              className="w-full text-left p-3 hover:bg-white/5 flex items-start justify-between gap-3"
+                              onClick={async () => {
+                                try {
+                                  if (eqPickerMode === "create") {
+                                    await createEquivalenceWith(p);
+                                  } else {
+                                    await addProductToExistingCode(
+                                      eqPickerTargetCode,
+                                      eqPickerTargetChunk,
+                                      p
+                                    );
+                                  }
+                                  closePicker();
+                                } catch (e) {
+                                  console.error(e);
+                                }
+                              }}
+                            >
+                              <div className="min-w-0">
+                                <div
+                                  className="font-semibold truncate"
+                                  title={p.name}
+                                >
+                                  {p.name || "(sin nombre)"}
+                                </div>
+                                <div className="text-[11px] text-white/60 truncate">
+                                  <span className="font-mono">
+                                    {p.sku || "-"}
+                                  </span>
+                                  {" • "}
+                                  {p.category || "-"}
+                                  {p.provider ? ` • ${p.provider}` : ""}
+                                </div>
+                              </div>
+                              <span className="shrink-0 text-xs px-2 py-1 rounded-md bg-white/10 text-white/70">
+                                {eqPickerMode === "create"
+                                  ? "Crear"
+                                  : "Agregar"}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={closePicker}
+                        className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1860,7 +2548,6 @@ function Info({ label, value }) {
   );
 }
 
-/* --- Toggle compacto --- */
 function TogglePill({ checked, onChange, disabled = false }) {
   return (
     <button
@@ -1889,12 +2576,7 @@ function TogglePill({ checked, onChange, disabled = false }) {
 }
 
 /* ====== Selectores ====== */
-function ProviderSelect({
-  value,
-  onChange,
-  options = [],
-  placeholder = "Proveedor...",
-}) {
+function ProviderSelect({ value, onChange, options = [], placeholder }) {
   return (
     <BaseSelect
       value={value}
@@ -1907,12 +2589,7 @@ function ProviderSelect({
     />
   );
 }
-function CategorySelect({
-  value,
-  onChange,
-  options = [],
-  placeholder = "Tipo de producto...",
-}) {
+function CategorySelect({ value, onChange, options = [], placeholder }) {
   return (
     <BaseSelect
       value={value}
@@ -1970,7 +2647,6 @@ function BaseSelect({
     pick(v);
   }
 
-  // Cerrar por click/touch afuera (pointerdown en captura)
   useEffect(() => {
     if (!open) return;
     function onDocPointerDown(e) {
@@ -1984,7 +2660,6 @@ function BaseSelect({
       document.removeEventListener("pointerdown", onDocPointerDown, true);
   }, [open]);
 
-  // Escape
   useEffect(() => {
     if (!open) return;
     function onKey(e) {
@@ -2165,8 +2840,10 @@ function blankProduct() {
     enabled: true,
     priceDiscount: "",
     discountActive: false,
+    equivalences: [],
   };
 }
+
 function normalizeForSave(f) {
   return {
     name: (f.name || "").trim(),
@@ -2187,8 +2864,10 @@ function normalizeForSave(f) {
     enabled: f.enabled !== false,
     priceDiscount: toNum(f.priceDiscount || 0),
     discountActive: !!f.discountActive && toNum(f.priceDiscount) > 0,
+    equivalences: Array.isArray(f.equivalences) ? f.equivalences : [],
   };
 }
+
 function validate(p) {
   if (!p.name) throw new Error("El nombre es obligatorio");
   if (p.price < 0) throw new Error("El precio de venta no puede ser negativo");
@@ -2197,6 +2876,7 @@ function validate(p) {
   if (p.discountActive && p.priceDiscount >= p.price)
     throw new Error("El descuento debe ser menor al precio de venta");
 }
+
 function finalPriceContado(p) {
   return p.discountActive && p.priceDiscount > 0 ? p.priceDiscount : p.price;
 }
@@ -2214,14 +2894,24 @@ const toInt = (v) => parseInt(v || 0, 10);
 const toStr = (n) => (n === 0 || n ? String(n) : "");
 const toStrInt = (n) => (n === 0 || n ? String(n) : "");
 
-// ====== aplanar docs de productos ======
+// ====== aplanar docs de productos (FIX: snapData) ======
 function flattenProducts(docs) {
   const out = [];
   for (const d of docs) {
-    for (const [k, v] of Object.entries(d.data)) {
+    let data = {};
+    try {
+      data = typeof d?.data === "function" ? d.data() || {} : d?.data || {};
+    } catch {
+      data = {};
+    }
+    for (const [k, v] of Object.entries(data)) {
       if (!k.startsWith("p_")) continue;
       if (v && typeof v === "object")
-        out.push({ ...v, id: v.id, chunkDoc: v.chunkDoc || d.id });
+        out.push({
+          ...v,
+          id: v.id || k.replace("p_", ""),
+          chunkDoc: v.chunkDoc || d.id,
+        });
     }
   }
   return out.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
@@ -2265,10 +2955,7 @@ function safeStr(v) {
   return (v == null ? "" : String(v)).trim();
 }
 
-// 🔁 Normalización común de IDs (base + Excel)
-// - Mayúsculas
-// - Si solo números => pad a 6 (000123)
-// - Si tiene letras => se quedan letras+ números (sin espacios/símbolos)
+// Normalización IDs
 function normalizeIdForMatch(raw) {
   const s = safeStr(raw).toUpperCase();
   if (!s) return "";
@@ -2281,14 +2968,9 @@ function normalizeIdForMatch(raw) {
   return alnum || s;
 }
 
-/**
- * Importa EXACTAMENTE el Excel exportado por handleExportXLSX
- * (mismas columnas, mismos encabezados).
- */
 function mapRowToProductModel(row) {
   const get = (key) => row[key] ?? "";
 
-  // Claves esperadas (salida de normHeader sobre los headers de export)
   const id = safeStr(get("id"));
   const nombre = safeStr(get("nombre"));
   const tipoProducto = safeStr(get("tipo de producto"));

@@ -1,3 +1,6 @@
+// src/servicios/Context.jsx
+"use client";
+
 import React, { useEffect, useRef, useState } from "react";
 import ContextGeneral from "./contextGeneral";
 import firebaseApp from "./firebase";
@@ -32,11 +35,97 @@ function Context(props) {
   const [presupuestos, setPresupuestos] = useState([]);
   const [presupuestosLoading, setPresupuestosLoading] = useState(false);
 
+  // ✅ Equivalencias (chunked)
+  const [equivalenciasDocs, setEquivalenciasDocs] = useState([]); // chunks crudos
+  const [equivalenciasMap, setEquivalenciasMap] = useState({}); // code -> obj
+  const [equivalenciasLoading, setEquivalenciasLoading] = useState(false);
+
   const auth = getAuth(firebaseApp);
   const firestore = getFirestore(firebaseApp);
   const userDocUnsubRef = useRef(null);
 
+  // ==========================
+  // Helpers equivalencias (join)
+  // ==========================
+  function productKey(p) {
+    const cd = String(p?.chunkDoc || "");
+    const id = String(p?.id || "");
+    if (!cd || !id) return "";
+    return `${cd}_${id}`;
+  }
+
+  // Índice rápido key -> producto (para resolver members a info del producto)
+  const productosByKeyRef = useRef(new Map());
+  useEffect(() => {
+    const m = new Map();
+    (Array.isArray(productos) ? productos : []).forEach((p) => {
+      const key = productKey(p);
+      if (key) m.set(key, p);
+    });
+    productosByKeyRef.current = m;
+  }, [productos]);
+
+  // Devuelve grupos equivalencia del producto actual (enriquecido)
+  function getEquivalenceGroupsForProduct(prod) {
+    const refs = Array.isArray(prod?.equivalences) ? prod.equivalences : [];
+    if (!refs.length) return [];
+
+    const out = [];
+    for (const r of refs) {
+      const code = String(r?.code || "").trim();
+      if (!code) continue;
+
+      const eq = equivalenciasMap?.[code];
+      if (!eq) continue;
+
+      const members = Array.isArray(eq.members) ? eq.members : [];
+      const enriched = members
+        .map((m) => {
+          const key = `${m.chunkDoc}_${m.id}`;
+          const p = productosByKeyRef.current.get(key);
+          return {
+            key,
+            chunkDoc: m.chunkDoc,
+            id: m.id,
+            name: p?.name || "(sin nombre)",
+            sku: p?.sku || "",
+            category: p?.category || "",
+            provider: p?.provider || "",
+            _raw: p || null,
+          };
+        })
+        .filter(Boolean);
+
+      out.push({
+        code,
+        chunkDoc: eq.chunkDoc || r.chunkDoc || "",
+        members: enriched,
+      });
+    }
+
+    out.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+    return out;
+  }
+
+  // Devuelve productos equivalentes dado un code (opcional excluyendo uno)
+  function getEquivalentProductsByCode(code, excludeKey) {
+    const c = String(code || "").trim();
+    if (!c) return [];
+    const eq = equivalenciasMap?.[c];
+    if (!eq) return [];
+    const members = Array.isArray(eq.members) ? eq.members : [];
+    return members
+      .map((m) => {
+        const key = `${m.chunkDoc}_${m.id}`;
+        if (excludeKey && key === excludeKey) return null;
+        return productosByKeyRef.current.get(key) || null;
+      })
+      .filter(Boolean);
+  }
+
+  // ==========================
   // Crear o actualizar usuario
+  // ==========================
   async function ensureUserExists(usuarioFirebase) {
     if (!firestore || !usuarioFirebase?.email) return;
     const email = usuarioFirebase.email;
@@ -65,7 +154,9 @@ function Context(props) {
     }
   }
 
+  // ==========================
   // Manejo de sesión
+  // ==========================
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (usuarioFirebase) => {
       if (userDocUnsubRef.current) {
@@ -115,7 +206,9 @@ function Context(props) {
     };
   }, [auth, firestore]);
 
+  // ==========================
   // RT de colecciones
+  // ==========================
   const unsubsRef = useRef([]);
 
   useEffect(() => {
@@ -130,6 +223,7 @@ function Context(props) {
 
     setLoader(true);
     setPresupuestosLoading(true);
+    setEquivalenciasLoading(true);
 
     // --- Categorías ---
     const unsubCategorias = onSnapshot(
@@ -146,7 +240,7 @@ function Context(props) {
     );
     unsubsRef.current.push(unsubCategorias);
 
-    // --- Productos ---
+    // --- Productos (chunked p_) ---
     const unsubProductos = onSnapshot(
       collection(firestore, "productos"),
       (snap) => {
@@ -154,30 +248,90 @@ function Context(props) {
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
-            if (k.startsWith("p_") && v) prods.push({ id: k, ...v });
+            if (k.startsWith("p_") && v) {
+              // ⚠️ Guardamos id real y chunkDoc consistente
+              // (en tu Inventario luego lo normalizás a id=v.id, chunkDoc=d.id)
+              prods.push({
+                id: v?.id || k.replace("p_", ""),
+                chunkDoc: v?.chunkDoc || d.id,
+                ...v,
+              });
+            }
           }
         });
         setProductos(prods);
+        setLoader(false);
+      },
+      (err) => {
+        console.error("RT productos:", err);
+        setProductos([]);
         setLoader(false);
       }
     );
     unsubsRef.current.push(unsubProductos);
 
-    // --- Ventas ---
-    const unsubVentas = onSnapshot(collection(firestore, "ventas"), (snap) => {
-      const arr = [];
-      snap.docs.forEach((d) => {
-        const data = d.data() || {};
-        for (const [k, v] of Object.entries(data)) {
-          if (k.startsWith("v_") && v) arr.push({ id: k, ...v });
-        }
-      });
-      setVentas(arr);
-      setLoader(false);
-    });
+    // --- Equivalencias (chunked e_) ---
+    const unsubEquivalencias = onSnapshot(
+      collection(firestore, "equivalencias"),
+      (snap) => {
+        const chunks = [];
+        const map = {};
+
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          chunks.push({ id: d.id, data });
+
+          for (const [k, v] of Object.entries(data)) {
+            if (!k.startsWith("e_") || !v) continue;
+
+            const code = String(v.code || k.slice(2) || "").trim();
+            if (!code) continue;
+
+            map[code] = {
+              ...v,
+              code,
+              chunkDoc: v.chunkDoc || d.id,
+              members: Array.isArray(v.members) ? v.members : [],
+            };
+          }
+        });
+
+        setEquivalenciasDocs(chunks);
+        setEquivalenciasMap(map);
+        setEquivalenciasLoading(false);
+      },
+      (err) => {
+        console.error("RT equivalencias:", err);
+        setEquivalenciasDocs([]);
+        setEquivalenciasMap({});
+        setEquivalenciasLoading(false);
+      }
+    );
+    unsubsRef.current.push(unsubEquivalencias);
+
+    // --- Ventas (chunked v_) ---
+    const unsubVentas = onSnapshot(
+      collection(firestore, "ventas"),
+      (snap) => {
+        const arr = [];
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (k.startsWith("v_") && v) arr.push({ id: k, ...v });
+          }
+        });
+        setVentas(arr);
+        setLoader(false);
+      },
+      (err) => {
+        console.error("RT ventas:", err);
+        setVentas([]);
+        setLoader(false);
+      }
+    );
     unsubsRef.current.push(unsubVentas);
 
-    // --- Presupuestos ---
+    // --- Presupuestos (chunked b_) ---
     const unsubPresupuestos = onSnapshot(
       collection(firestore, "presupuestos"),
       (snap) => {
@@ -189,6 +343,11 @@ function Context(props) {
           }
         });
         setPresupuestos(list);
+        setPresupuestosLoading(false);
+      },
+      (err) => {
+        console.error("RT presupuestos:", err);
+        setPresupuestos([]);
         setPresupuestosLoading(false);
       }
     );
@@ -221,7 +380,9 @@ function Context(props) {
     };
   }, [firestore]);
 
-  // ===== Provider =====
+  // ==========================
+  // Provider
+  // ==========================
   return (
     <ContextGeneral.Provider
       value={{
@@ -232,12 +393,22 @@ function Context(props) {
         permisos, // array [1,2,3...]
         loader,
         setLoader,
+
         categorias,
         productos,
         ventas,
         egresos, // 👈 viene de colección "caja"
         presupuestos,
         presupuestosLoading,
+
+        // ✅ Equivalencias
+        equivalenciasDocs,
+        equivalenciasMap,
+        equivalenciasLoading,
+        getEquivalenceGroupsForProduct,
+        getEquivalentProductsByCode,
+
+        // setters
         setCategorias,
         setProductos,
         setVentas,
