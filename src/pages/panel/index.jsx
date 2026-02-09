@@ -149,7 +149,7 @@ export default function Dashboard() {
         { id: "caja", label: "Caja", icon: CashIcon }, // ✅ NUEVO
         { id: "inventario", label: "Inventario", icon: BoxIcon },
         { id: "stock", label: "Stock", icon: StockIcon },
-        { id: "historial", label: "Historial de ventas", icon: HistoryIcon }
+        { id: "historial", label: "Historial de ventas", icon: HistoryIcon },
       );
     }
     if (isAdmin4)
@@ -336,8 +336,8 @@ export default function Dashboard() {
               {location === "pv1"
                 ? "PV1"
                 : location === "pv2"
-                ? "PV2"
-                : "Taller"}
+                  ? "PV2"
+                  : "Taller"}
             </span>
           </div>
         </div>
@@ -365,8 +365,8 @@ export default function Dashboard() {
                 {location === "pv1"
                   ? "Punto de Venta 1"
                   : location === "pv2"
-                  ? "Punto de Venta 2"
-                  : "Taller"}
+                    ? "Punto de Venta 2"
+                    : "Taller"}
               </strong>
               {location === "taller" && (
                 <span className="ml-1 text-[11px] px-2 py-0.5 rounded-lg bg-white/5 ring-1 ring-white/10">
@@ -424,8 +424,8 @@ function AccessDenied({ location }) {
     location === "pv1"
       ? "Punto de Venta 1"
       : location === "pv2"
-      ? "Punto de Venta 2"
-      : "Taller";
+        ? "Punto de Venta 2"
+        : "Taller";
   return (
     <div className="rounded-xl border border-white/10 p-6 bg-white/5">
       <h3 className="text-lg font-semibold">Acceso restringido</h3>
@@ -492,14 +492,14 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
     value === "pv1"
       ? "Punto de Venta 1"
       : value === "pv2"
-      ? "Punto de Venta 2"
-      : "Taller";
+        ? "Punto de Venta 2"
+        : "Taller";
   const ring =
     value === "pv1"
       ? "ring-[#EE7203]/60"
       : value === "pv2"
-      ? "ring-[#FF3816]/60"
-      : "ring-emerald-400/60";
+        ? "ring-[#FF3816]/60"
+        : "ring-emerald-400/60";
 
   const Option = ({ id, allowed, label, desc, grad, icon: IconEl }) => (
     <li>

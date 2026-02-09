@@ -12,7 +12,15 @@ import {
   deleteField,
   runTransaction,
 } from "firebase/firestore";
-import { FiEdit2, FiTrash2, FiLink, FiPlus, FiX } from "react-icons/fi";
+import {
+  FiEdit2,
+  FiTrash2,
+  FiLink,
+  FiPlus,
+  FiX,
+  FiLayers,
+  FiSearch,
+} from "react-icons/fi";
 
 const CHUNK_LIMIT = 200; // productos (p_)
 const CHUNK_LIMIT_EQ = 200; // equivalencias (e_)
@@ -69,7 +77,7 @@ export default function Inventario() {
     const set = new Set(
       items
         .map((p) => (p.provider || "").trim())
-        .filter((v) => v && v.length > 0)
+        .filter((v) => v && v.length > 0),
     );
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [items]);
@@ -79,7 +87,7 @@ export default function Inventario() {
     const set = new Set(
       items
         .map((p) => (p.category || "").trim())
-        .filter((v) => v && v.length > 0)
+        .filter((v) => v && v.length > 0),
     );
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [items]);
@@ -133,6 +141,10 @@ export default function Inventario() {
   // refs de inputs
   const skuInputRef = useRef(null);
 
+  // Estados para modales secundarios (definidos aquí para usarlos en hooks)
+  const [eqPickerOpen, setEqPickerOpen] = useState(false);
+  const [openEqList, setOpenEqList] = useState(false);
+
   // ===== Scanner de código de barras =====
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
@@ -169,15 +181,43 @@ export default function Inventario() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
 
-  // 🔑 Cerrar modal con ESC
+  // 🔑 Cerrar modal EDITAR con ESC (Solo si el picker no está encima)
   useEffect(() => {
     if (!open) return;
     function onKey(e) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        if (!eqPickerOpen) {
+          setOpen(false);
+        }
+      }
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open]);
+  }, [open, eqPickerOpen]);
+
+  // 🔑 Cerrar modal GLOBAL LIST con ESC
+  useEffect(() => {
+    if (!openEqList) return;
+    function onKey(e) {
+      if (e.key === "Escape") {
+        if (!eqPickerOpen) {
+          setOpenEqList(false);
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [openEqList, eqPickerOpen]);
+
+  // 🔑 Cerrar modal PICKER con ESC
+  useEffect(() => {
+    if (!eqPickerOpen) return;
+    function onKey(e) {
+      if (e.key === "Escape") closePicker();
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [eqPickerOpen]);
 
   // Import progress
   const [imp, setImp] = useState({
@@ -244,7 +284,7 @@ export default function Inventario() {
   const [page, setPage] = useState(1);
   useEffect(
     () => setPage(1),
-    [qtext, onlyActive, onlyWithStock, onlyLow, lowThreshold, items, pageSize]
+    [qtext, onlyActive, onlyWithStock, onlyLow, lowThreshold, items, pageSize],
   );
 
   const total = filtered.length;
@@ -259,7 +299,7 @@ export default function Inventario() {
     pageSize === 0 ? total : Math.min(total, startIndex + pageSize);
   const pageItems = useMemo(
     () => filtered.slice(startIndex, endIndex),
-    [filtered, startIndex, endIndex]
+    [filtered, startIndex, endIndex],
   );
 
   // ===== Modal =====
@@ -420,7 +460,7 @@ export default function Inventario() {
           loading: "Eliminando…",
           success: "Producto eliminado",
           error: "No se pudo eliminar",
-        }
+        },
       );
     } catch (e) {
       console.error(e);
@@ -438,7 +478,7 @@ export default function Inventario() {
     return `${cd}_${id}`;
   }
 
-  // elegir chunk para equivalencias (FIX: snapData)
+  // elegir chunk para equivalencias
   function pickEquivalenceChunkDocId() {
     const docs = Array.isArray(equivalenciasDocs) ? equivalenciasDocs : [];
     for (const d of docs) {
@@ -446,6 +486,10 @@ export default function Inventario() {
       const count = Object.keys(data).filter((k) => k.startsWith("e_")).length;
       if (count < CHUNK_LIMIT_EQ) return d.id;
     }
+    // Si no hay docs o todos llenos, creamos uno nuevo virtualmente
+    // (en write se creará). Si no hay docs, empezamos por '001'.
+    if (docs.length === 0) return "001";
+
     const next = makeNextChunkName(docs.map((d) => d.id));
     return next();
   }
@@ -519,7 +563,7 @@ export default function Inventario() {
     const cd = String(p?.chunkDoc || "");
     const id = String(p?.id || "");
     return (Array.isArray(members) ? members : []).filter(
-      (m) => !(String(m?.chunkDoc || "") === cd && String(m?.id || "") === id)
+      (m) => !(String(m?.chunkDoc || "") === cd && String(m?.id || "") === id),
     );
   }
 
@@ -528,8 +572,8 @@ export default function Inventario() {
   }
 
   // ===== UI state picker =====
-  const [eqPickerOpen, setEqPickerOpen] = useState(false);
-  const [eqPickerMode, setEqPickerMode] = useState("create"); // create | addTo
+  // modes: 'create' | 'addTo' | 'globalAdd' | 'globalCreate'
+  const [eqPickerMode, setEqPickerMode] = useState("create");
   const [eqPickerTargetCode, setEqPickerTargetCode] = useState("");
   const [eqPickerTargetChunk, setEqPickerTargetChunk] = useState("");
   const [eqSearch, setEqSearch] = useState("");
@@ -546,6 +590,24 @@ export default function Inventario() {
     setEqPickerMode("addTo");
     setEqPickerTargetCode(String(code || ""));
     setEqPickerTargetChunk(String(chunkDoc || ""));
+    setEqSearch("");
+    setEqPickerOpen(true);
+  }
+
+  // Abre el picker para añadir producto desde el modal global a un código existente
+  function openPickerGlobalAdd(code, chunkDoc) {
+    setEqPickerMode("globalAdd");
+    setEqPickerTargetCode(String(code || ""));
+    setEqPickerTargetChunk(String(chunkDoc || ""));
+    setEqSearch("");
+    setEqPickerOpen(true);
+  }
+
+  // Abre el picker para crear una nueva equivalencia desde el modal global
+  function openPickerGlobalCreate() {
+    setEqPickerMode("globalCreate");
+    setEqPickerTargetCode("");
+    setEqPickerTargetChunk("");
     setEqSearch("");
     setEqPickerOpen(true);
   }
@@ -568,7 +630,15 @@ export default function Inventario() {
       .filter((p) => {
         const k = safeProdKey(p);
         if (!k) return false;
-        if (currentKey && k === currentKey) return false;
+        // Si estamos editando un producto, no mostrarse a sí mismo
+        // En modos globales, no hay "editing" obligatorio, así que permitimos todos.
+        if (
+          (eqPickerMode === "create" || eqPickerMode === "addTo") &&
+          currentKey &&
+          k === currentKey
+        ) {
+          return false;
+        }
         const inText =
           !t ||
           p.name?.toLowerCase().includes(t) ||
@@ -578,9 +648,11 @@ export default function Inventario() {
         return inText;
       })
       .slice(0, 50);
-  }, [items, eqSearch, editing]);
+  }, [items, eqSearch, editing, eqPickerMode]);
 
   // ===== Acciones equivalencias =====
+
+  // 1. Crear equivalencia DESDE el modal de edición de producto
   async function createEquivalenceWith(otherProd) {
     if (!isAdmin4) return;
     if (!firestore) return toast.error("Firestore no disponible");
@@ -626,7 +698,7 @@ export default function Inventario() {
         const { eqRef, eqSnap, fieldKey } = await txGetEquivalence(
           tx,
           eqChunkDoc,
-          code
+          code,
         );
         const eqObj = {
           code,
@@ -667,6 +739,72 @@ export default function Inventario() {
     });
   }
 
+  // 2. Crear equivalencia DESDE el modal GLOBAL (sin producto editado)
+  async function createEquivalenceGlobal(firstProd) {
+    if (!isAdmin4) return;
+    if (!firestore) return toast.error("Firestore no disponible");
+    if (!firstProd?.id || !firstProd?.chunkDoc)
+      return toast.error("Producto inválido.");
+
+    const a = { id: firstProd.id, chunkDoc: firstProd.chunkDoc };
+
+    // Generar código único
+    let code = newEquivalenceCode();
+    let guard = 0;
+    while (equivalenciasMap?.[code] && guard < 40) {
+      code = newEquivalenceCode();
+      guard++;
+    }
+    if (guard >= 40) return toast.error("No se pudo generar un código único.");
+
+    const eqChunkDoc = pickEquivalenceChunkDocId();
+
+    const run = async () => {
+      await runTransaction(firestore, async (tx) => {
+        // Obtenemos el producto para asegurarnos que existe y ver sus refs actuales
+        const aSnap = await txGetProduct(tx, a);
+        const aRefs = Array.isArray(aSnap.obj?.equivalences)
+          ? aSnap.obj.equivalences
+          : [];
+
+        // Preparamos el objeto de equivalencia
+        const { eqRef, eqSnap, fieldKey } = await txGetEquivalence(
+          tx,
+          eqChunkDoc,
+          code,
+        );
+
+        // Creamos el grupo con un solo miembro inicialmente
+        const eqObj = {
+          code,
+          chunkDoc: eqChunkDoc,
+          members: uniqMembers([a]),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: ctx?.user?.email || "admin",
+        };
+
+        if (eqSnap.exists()) {
+          tx.update(eqRef, { [fieldKey]: eqObj });
+        } else {
+          tx.set(eqRef, { [fieldKey]: eqObj }, { merge: true });
+        }
+
+        // Actualizamos el producto con la referencia
+        const refA = { code, chunkDoc: eqChunkDoc };
+        const nextA = normalizeEquivalenceRefs([...aRefs, refA]);
+        await txWriteProductEquivalences(tx, a, nextA);
+      });
+    };
+
+    await toast.promise(run(), {
+      loading: "Creando grupo de equivalencia...",
+      success: "Grupo creado exitosamente",
+      error: (e) => e?.message || "Error al crear grupo",
+    });
+  }
+
+  // 3. Añadir producto a código existente (desde modal de edición)
   async function addProductToExistingCode(code, chunkDoc, otherProd) {
     if (!isAdmin4) return;
     if (!firestore) return toast.error("Firestore no disponible");
@@ -694,7 +832,7 @@ export default function Inventario() {
         const { eqRef, eqSnap, fieldKey, eqObj } = await txGetEquivalence(
           tx,
           chunkDoc,
-          code
+          code,
         );
 
         if (!eqSnap.exists())
@@ -740,6 +878,76 @@ export default function Inventario() {
     });
   }
 
+  // 4. Versión "Global" que no depende de `editing` para añadir productos a un grupo existente
+  async function addProductToCodeGlobal(code, chunkDoc, productToAdd) {
+    if (!isAdmin4) return;
+    if (!firestore) throw new Error("Firestore no disponible");
+    if (!code || !chunkDoc) throw new Error("Código inválido.");
+    if (!productToAdd?.id || !productToAdd?.chunkDoc)
+      throw new Error("Producto inválido.");
+
+    const b = { id: productToAdd.id, chunkDoc: productToAdd.chunkDoc };
+
+    const run = async () => {
+      await runTransaction(firestore, async (tx) => {
+        // Leer el producto que se va a agregar
+        const bSnap = await txGetProduct(tx, b);
+        const bRefs = Array.isArray(bSnap.obj?.equivalences)
+          ? bSnap.obj.equivalences
+          : [];
+
+        // Leer la equivalencia
+        const { eqRef, eqSnap, fieldKey, eqObj } = await txGetEquivalence(
+          tx,
+          chunkDoc,
+          code,
+        );
+
+        if (!eqSnap.exists())
+          throw new Error("No existe el chunk de equivalencia");
+        if (!eqObj) throw new Error("No existe el código de equivalencia");
+
+        // Agregar miembro
+        const members = Array.isArray(eqObj.members) ? eqObj.members : [];
+        // Chequear si ya existe
+        if (
+          members.some(
+            (m) =>
+              String(m.id) === String(b.id) &&
+              String(m.chunkDoc) === String(b.chunkDoc),
+          )
+        ) {
+          throw new Error("El producto ya está en este grupo de equivalencia.");
+        }
+
+        const nextMembers = uniqMembers([
+          ...members,
+          { chunkDoc: b.chunkDoc, id: b.id },
+        ]);
+
+        const nextEq = {
+          ...eqObj,
+          members: nextMembers,
+          updatedAt: serverTimestamp(),
+        };
+
+        // Escribir equivalencia
+        tx.update(eqRef, { [fieldKey]: nextEq });
+
+        // Escribir ref en producto
+        const ref = { code, chunkDoc };
+        const nextB = normalizeEquivalenceRefs([...bRefs, ref]);
+        await txWriteProductEquivalences(tx, b, nextB);
+      });
+    };
+
+    await toast.promise(run(), {
+      loading: "Agregando producto...",
+      success: "Producto agregado",
+      error: (e) => e?.message || "Error al agregar",
+    });
+  }
+
   async function removeMemberFromCode(code, chunkDoc, member) {
     if (!isAdmin4) return;
     if (!firestore) return toast.error("Firestore no disponible");
@@ -756,15 +964,11 @@ export default function Inventario() {
       let selfShouldLoseRef = false;
 
       await runTransaction(firestore, async (tx) => {
-        // =========================
-        // 1) READS (ALL FIRST)
-        // =========================
-
-        // Leer equivalencia
+        // 1) READS
         const { eqRef, eqSnap, fieldKey, eqObj } = await txGetEquivalence(
           tx,
           chunkDoc,
-          code
+          code,
         );
         if (!eqSnap.exists())
           throw new Error("No existe el chunk de equivalencia");
@@ -773,20 +977,17 @@ export default function Inventario() {
         const members = Array.isArray(eqObj.members) ? eqObj.members : [];
         const nextMembers = removeMember(members, target);
 
-        // Leer producto target (el que sacás)
         const targetSnap = await txGetProduct(tx, target);
         const tRefs = Array.isArray(targetSnap.obj?.equivalences)
           ? targetSnap.obj.equivalences
           : [];
         const nextTRefs = normalizeEquivalenceRefs(
-          tRefs.filter((r) => String(r?.code || "") !== String(code))
+          tRefs.filter((r) => String(r?.code || "") !== String(code)),
         );
 
-        // Si queda huérfano, necesitamos leer todos los productos restantes ANTES de escribir
         const remainingReads = [];
         if (nextMembers.length < 2) {
           orphaned = true;
-
           for (const m of nextMembers) {
             const p = { id: m.id, chunkDoc: m.chunkDoc };
             const pSnap = await txGetProduct(tx, p);
@@ -794,12 +995,10 @@ export default function Inventario() {
               ? pSnap.obj.equivalences
               : [];
             const cleaned = normalizeEquivalenceRefs(
-              pRefs.filter((r) => String(r?.code || "") !== String(code))
+              pRefs.filter((r) => String(r?.code || "") !== String(code)),
             );
-
             remainingReads.push({ p, cleaned });
-
-            // marcar si el restante es el producto actual en edición (para limpiar el form local)
+            // marcar si yo soy el restante
             const isSelfRemaining =
               String(p.chunkDoc) === String(editing?.chunkDoc || "") &&
               String(p.id) === String(editing?.id || "");
@@ -807,15 +1006,10 @@ export default function Inventario() {
           }
         }
 
-        // =========================
-        // 2) WRITES (ALL AFTER READS)
-        // =========================
-
-        // a) sacar ref del producto target
+        // 2) WRITES
         await txWriteProductEquivalences(tx, target, nextTRefs);
 
         if (!orphaned) {
-          // b) actualizar equivalencia con members restantes
           const nextEq = {
             ...eqObj,
             members: uniqMembers(nextMembers),
@@ -823,33 +1017,25 @@ export default function Inventario() {
           };
           tx.update(eqRef, { [fieldKey]: nextEq });
         } else {
-          // b) borrar equivalencia (queda huérfana)
           tx.update(eqRef, { [fieldKey]: deleteField() });
-
-          // c) limpiar refs en restantes (si queda 1)
           for (const rr of remainingReads) {
             await txWriteProductEquivalences(tx, rr.p, rr.cleaned);
           }
         }
       });
 
-      // =========================
-      // 3) UI local (fuera de la TX)
-      // =========================
+      // 3) UI Local
       const isSelfRemoved =
         String(target.chunkDoc) === String(editing?.chunkDoc || "") &&
         String(target.id) === String(editing?.id || "");
 
-      // limpiar el form si:
-      // - me removí a mí mismo
-      // - o quedó huérfano y yo era el restante (me limpiaron server-side)
       if (isSelfRemoved || (orphaned && selfShouldLoseRef)) {
         setForm((prev) => ({
           ...prev,
           equivalences: normalizeEquivalenceRefs(
             (Array.isArray(prev?.equivalences) ? prev.equivalences : []).filter(
-              (r) => String(r?.code || "") !== String(code)
-            )
+              (r) => String(r?.code || "") !== String(code),
+            ),
           ),
         }));
       }
@@ -859,6 +1045,80 @@ export default function Inventario() {
       loading: "Quitando equivalencia…",
       success: "Actualizado",
       error: (e) => e?.message || "No se pudo quitar",
+    });
+  }
+
+  // Versión "Global" que no depende de `editing` ni de `confirm` interno (lo hace la UI)
+  async function removeMemberFromCodeGlobal(code, chunkDoc, member) {
+    if (!isAdmin4) return;
+    if (!firestore) throw new Error("Firestore no disponible");
+
+    const target = { id: member.id, chunkDoc: member.chunkDoc };
+
+    const run = async () => {
+      let orphaned = false;
+
+      await runTransaction(firestore, async (tx) => {
+        // 1) Reads
+        const { eqRef, eqSnap, fieldKey, eqObj } = await txGetEquivalence(
+          tx,
+          chunkDoc,
+          code,
+        );
+        if (!eqSnap.exists())
+          throw new Error("No existe el chunk de equivalencia");
+        if (!eqObj) throw new Error("No existe el código de equivalencia");
+
+        const members = Array.isArray(eqObj.members) ? eqObj.members : [];
+        const nextMembers = removeMember(members, target);
+
+        const targetSnap = await txGetProduct(tx, target);
+        const tRefs = Array.isArray(targetSnap.obj?.equivalences)
+          ? targetSnap.obj.equivalences
+          : [];
+        const nextTRefs = normalizeEquivalenceRefs(
+          tRefs.filter((r) => String(r?.code || "") !== String(code)),
+        );
+
+        const remainingReads = [];
+        if (nextMembers.length < 2) {
+          orphaned = true;
+          for (const m of nextMembers) {
+            const p = { id: m.id, chunkDoc: m.chunkDoc };
+            const pSnap = await txGetProduct(tx, p);
+            const pRefs = Array.isArray(pSnap.obj?.equivalences)
+              ? pSnap.obj.equivalences
+              : [];
+            const cleaned = normalizeEquivalenceRefs(
+              pRefs.filter((r) => String(r?.code || "") !== String(code)),
+            );
+            remainingReads.push({ p, cleaned });
+          }
+        }
+
+        // 2) Writes
+        await txWriteProductEquivalences(tx, target, nextTRefs);
+
+        if (!orphaned) {
+          const nextEq = {
+            ...eqObj,
+            members: uniqMembers(nextMembers),
+            updatedAt: serverTimestamp(),
+          };
+          tx.update(eqRef, { [fieldKey]: nextEq });
+        } else {
+          tx.update(eqRef, { [fieldKey]: deleteField() });
+          for (const rr of remainingReads) {
+            await txWriteProductEquivalences(tx, rr.p, rr.cleaned);
+          }
+        }
+      });
+    };
+
+    await toast.promise(run(), {
+      loading: "Quitando...",
+      success: "Producto quitado",
+      error: (e) => e?.message || "Error al quitar",
     });
   }
 
@@ -876,6 +1136,62 @@ export default function Inventario() {
     getEquivalenceGroupsForProduct,
     equivalenciasMap,
   ]);
+
+  // =========================================================
+  // ============= MODAL GLOBAL DE EQUIVALENCIAS =============
+  // =========================================================
+
+  const [qEqList, setQEqList] = useState("");
+
+  // Aplanar todas las equivalencias en una lista fácil de renderizar
+  // agregando data del producto (nombre, sku) si existe en memoria
+  const allEquivalencesList = useMemo(() => {
+    if (!equivalenciasDocs) return [];
+    const arr = [];
+    const itemsMap = new Map();
+    items.forEach((it) => {
+      itemsMap.set(safeProdKey(it), it);
+    });
+
+    equivalenciasDocs.forEach((docSnap) => {
+      const d = snapData(docSnap);
+      Object.entries(d).forEach(([k, val]) => {
+        if (!k.startsWith("e_")) return;
+        const membersEnhanced = (val.members || []).map((m) => {
+          const key = safeProdKey(m);
+          const found = itemsMap.get(key);
+          return {
+            ...m,
+            name: found?.name || "(Producto no cargado)",
+            sku: found?.sku || "",
+            provider: found?.provider || "",
+          };
+        });
+        arr.push({
+          ...val,
+          membersEnhanced,
+        });
+      });
+    });
+
+    return arr.sort((a, b) => (a.code || "").localeCompare(b.code || ""));
+  }, [equivalenciasDocs, items]);
+
+  const filteredEquivalences = useMemo(() => {
+    const t = qEqList.trim().toLowerCase();
+    if (!t) return allEquivalencesList;
+    return allEquivalencesList.filter((eq) => {
+      if (eq.code?.toLowerCase().includes(t)) return true;
+      // buscar dentro de miembros
+      const matchMember = eq.membersEnhanced.some(
+        (m) =>
+          m.name.toLowerCase().includes(t) ||
+          m.sku.toLowerCase().includes(t) ||
+          m.provider.toLowerCase().includes(t),
+      );
+      return matchMember;
+    });
+  }, [allEquivalencesList, qEqList]);
 
   // =========================================================
   // ===================== IMPORT / EXPORT ====================
@@ -957,10 +1273,10 @@ export default function Inventario() {
         (Array.isArray(docsSnap) ? docsSnap : []).map((d) => [
           d.id,
           Object.keys(snapData(d)).filter((k) => k.startsWith("p_")).length,
-        ])
+        ]),
       );
       const nextChunkName = makeNextChunkName(
-        (Array.isArray(docsSnap) ? docsSnap : []).map((d) => d.id)
+        (Array.isArray(docsSnap) ? docsSnap : []).map((d) => d.id),
       );
 
       const upsertsByDoc = new Map();
@@ -1076,7 +1392,7 @@ export default function Inventario() {
 
       setImp((s) => ({ ...s, processed, created, updated }));
       toast.success(
-        `Importación OK — Creados: ${created} · Actualizados: ${updated} · Docs escritos: ${docWrites}`
+        `Importación OK — Creados: ${created} · Actualizados: ${updated} · Docs escritos: ${docWrites}`,
       );
     } catch (e) {
       console.error(e);
@@ -1297,7 +1613,7 @@ export default function Inventario() {
                 title="Umbral de alerta para stocks bajos"
                 onChange={(e) =>
                   setLowThreshold(
-                    Math.max(0, parseInt(e.target.value || "0", 10))
+                    Math.max(0, parseInt(e.target.value || "0", 10)),
                   )
                 }
                 className="w-14 rounded-lg bg-[#0C212D] border border-white/10 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
@@ -1351,6 +1667,16 @@ export default function Inventario() {
               className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
             >
               Exportar plantilla
+            </button>
+
+            {/* BOTÓN NUEVO: Gestionar equivalencias */}
+            <button
+              onClick={() => setOpenEqList(true)}
+              title="Ver todas las equivalencias en una lista"
+              className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm flex items-center gap-1"
+            >
+              <FiLayers className="w-4 h-4" />
+              Equivalencias
             </button>
 
             <button
@@ -1451,7 +1777,7 @@ export default function Inventario() {
                   imp.total > 0
                     ? `${Math.min(
                         100,
-                        Math.round((imp.processed / imp.total) * 100)
+                        Math.round((imp.processed / imp.total) * 100),
                       )}%`
                     : "0%",
               }}
@@ -1702,7 +2028,7 @@ export default function Inventario() {
                         className="text-right whitespace-nowrap"
                         title={fmtTitle(
                           "Precio (venta)",
-                          money(finalPriceContado(p))
+                          money(finalPriceContado(p)),
                         )}
                       >
                         {money(finalPriceContado(p))}
@@ -1831,13 +2157,136 @@ export default function Inventario() {
         </div>
       )}
 
-      {/* Modal Crear/Editar */}
+      {/* ================= MODAL GLOBAL EQUIVALENCIAS ================= */}
+      {isAdmin4 && openEqList && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setOpenEqList(false);
+          }}
+        >
+          <div
+            className="w-full max-w-4xl rounded-xl bg-[#0E2533] border border-white/10 shadow-2xl flex flex-col max-h-[90vh]"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-white/10 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FiLayers className="w-5 h-5 text-[#EE7203]" />
+                <h3 className="font-semibold text-lg">
+                  Administrador de Equivalencias
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={openPickerGlobalCreate}
+                  className="px-3 py-1.5 text-sm rounded-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] hover:opacity-90 flex items-center gap-1"
+                >
+                  <FiPlus className="w-4 h-4" /> Nueva Equivalencia
+                </button>
+                <button
+                  onClick={() => setOpenEqList(false)}
+                  className="text-white/60 hover:text-white p-1"
+                  title="Cerrar"
+                >
+                  <FiX className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-3 border-b border-white/10 bg-[#0C212D]">
+              <div className="relative">
+                <FiSearch className="absolute left-3 top-2.5 text-white/50" />
+                <input
+                  value={qEqList}
+                  onChange={(e) => setQEqList(e.target.value)}
+                  placeholder="Buscar por código de equivalencia, nombre de producto, SKU..."
+                  className="w-full pl-9 pr-3 py-2 rounded-lg bg-white/5 border border-white/10 outline-none focus:border-[#EE7203] text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {filteredEquivalences.length === 0 ? (
+                <div className="text-center py-10 text-white/50">
+                  {qEqList
+                    ? "No se encontraron equivalencias con ese criterio."
+                    : "No hay grupos de equivalencias registrados."}
+                </div>
+              ) : (
+                filteredEquivalences.map((eq) => (
+                  <div
+                    key={eq.code}
+                    className="rounded-lg border border-white/10 bg-[#142e3e] p-3 shadow-sm"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono bg-black/30 px-2 py-0.5 rounded text-sm text-[#EE7203]">
+                          {eq.code}
+                        </span>
+                        <span className="text-xs text-white/50">
+                          {eq.membersEnhanced.length} productos
+                        </span>
+                      </div>
+                      <button
+                        onClick={() =>
+                          openPickerGlobalAdd(eq.code, eq.chunkDoc)
+                        }
+                        className="text-xs flex items-center gap-1 bg-white/10 hover:bg-white/15 px-2 py-1 rounded"
+                        title="Agregar producto a este grupo"
+                      >
+                        <FiPlus className="w-3 h-3" /> Agregar
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {eq.membersEnhanced.map((m) => (
+                        <div
+                          key={`${m.chunkDoc}_${m.id}`}
+                          className="flex items-center gap-2 bg-white/5 border border-white/10 rounded px-2 py-1 max-w-[250px]"
+                          title={`${m.name} (${m.sku}) - ${m.provider}`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs truncate font-medium">
+                              {m.name}
+                            </div>
+                            <div className="text-[10px] text-white/50 truncate">
+                              {m.sku || "-"}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() =>
+                              removeMemberFromCodeGlobal(
+                                eq.code,
+                                eq.chunkDoc,
+                                m,
+                              )
+                            }
+                            className="text-white/40 hover:text-red-300 p-0.5"
+                            title="Quitar del grupo"
+                          >
+                            <FiX className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Crear/Editar Producto */}
       {isAdmin4 && open && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
           onMouseDown={(e) => {
             if (modalRef.current && !modalRef.current.contains(e.target)) {
-              setOpen(false);
+              // Solo cerrar si el picker NO está abierto, para evitar cierres accidentales
+              if (!eqPickerOpen) {
+                setOpen(false);
+              }
             }
           }}
         >
@@ -2114,7 +2563,7 @@ export default function Inventario() {
                 />
               </Field>
 
-              {/* ===================== EQUIVALENCIAS UI ===================== */}
+              {/* ===================== EQUIVALENCIAS UI (En producto) ===================== */}
               <div className="md:col-span-3 pt-2">
                 <div className="rounded-xl border border-white/10 bg-white/5 p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -2264,117 +2713,133 @@ export default function Inventario() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
 
-            {/* ===== Picker overlay ===== */}
-            {eqPickerOpen && (
-              <div
-                className="fixed inset-0 z-[60] bg-black/60 grid place-items-center p-4"
-                onMouseDown={(e) => {
-                  if (e.target === e.currentTarget) closePicker();
-                }}
-              >
-                <div
-                  className="w-full max-w-2xl rounded-xl border border-white/10 bg-[#112C3E] shadow-2xl overflow-hidden"
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <div className="p-3 border-b border-white/10 flex items-center justify-between">
-                    <div className="min-w-0">
-                      <div className="font-semibold">
-                        {eqPickerMode === "create"
-                          ? "Crear equivalencia (nuevo código)"
-                          : `Agregar al código ${eqPickerTargetCode}`}
-                      </div>
-                      <div className="text-[11px] text-white/60 mt-0.5">
-                        Buscá el producto equivalente por nombre / código /
-                        proveedor / tipo.
-                      </div>
-                    </div>
-                    <button
-                      className="text-white/70 hover:text-white"
-                      onClick={closePicker}
-                      title="Cerrar"
-                    >
-                      ✕
-                    </button>
-                  </div>
-
-                  <div className="p-3">
-                    <input
-                      className="inp"
-                      placeholder="Buscar producto…"
-                      value={eqSearch}
-                      onChange={(e) => setEqSearch(e.target.value)}
-                    />
-
-                    <div className="mt-3 max-h-[55vh] overflow-y-auto rounded-lg border border-white/10">
-                      {eqPickCandidates.length === 0 ? (
-                        <div className="p-4 text-sm text-white/60">
-                          Sin resultados.
-                        </div>
-                      ) : (
-                        <div className="divide-y divide-white/10">
-                          {eqPickCandidates.map((p) => (
-                            <button
-                              key={`${p.chunkDoc}_${p.id}`}
-                              type="button"
-                              className="w-full text-left p-3 hover:bg-white/5 flex items-start justify-between gap-3"
-                              onClick={async () => {
-                                try {
-                                  if (eqPickerMode === "create") {
-                                    await createEquivalenceWith(p);
-                                  } else {
-                                    await addProductToExistingCode(
-                                      eqPickerTargetCode,
-                                      eqPickerTargetChunk,
-                                      p
-                                    );
-                                  }
-                                  closePicker();
-                                } catch (e) {
-                                  console.error(e);
-                                }
-                              }}
-                            >
-                              <div className="min-w-0">
-                                <div
-                                  className="font-semibold truncate"
-                                  title={p.name}
-                                >
-                                  {p.name || "(sin nombre)"}
-                                </div>
-                                <div className="text-[11px] text-white/60 truncate">
-                                  <span className="font-mono">
-                                    {p.sku || "-"}
-                                  </span>
-                                  {" • "}
-                                  {p.category || "-"}
-                                  {p.provider ? ` • ${p.provider}` : ""}
-                                </div>
-                              </div>
-                              <span className="shrink-0 text-xs px-2 py-1 rounded-md bg-white/10 text-white/70">
-                                {eqPickerMode === "create"
-                                  ? "Crear"
-                                  : "Agregar"}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="mt-3 flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={closePicker}
-                        className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
+      {/* ===== Picker overlay (Común para local y global) ===== */}
+      {/* ✅ FIX: Este componente estaba anidado dentro del modal de editar.
+          Ahora está afuera y funciona para ambos casos (Global y Edición).
+      */}
+      {eqPickerOpen && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/60 grid place-items-center p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closePicker();
+          }}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl border border-white/10 bg-[#112C3E] shadow-2xl overflow-hidden"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="p-3 border-b border-white/10 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="font-semibold">
+                  {eqPickerMode === "create"
+                    ? "Crear equivalencia (nuevo código)"
+                    : eqPickerMode === "globalCreate"
+                      ? "Nueva Equivalencia Global"
+                      : eqPickerMode === "globalAdd"
+                        ? `Agregar a ${eqPickerTargetCode} (Global)`
+                        : `Agregar al código ${eqPickerTargetCode}`}
+                </div>
+                <div className="text-[11px] text-white/60 mt-0.5">
+                  {eqPickerMode === "globalCreate"
+                    ? "Seleccioná el primer producto para el nuevo grupo."
+                    : "Buscá el producto equivalente por nombre / código / proveedor / tipo."}
                 </div>
               </div>
-            )}
+              <button
+                className="text-white/70 hover:text-white"
+                onClick={closePicker}
+                title="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3">
+              <input
+                className="inp"
+                placeholder="Buscar producto…"
+                value={eqSearch}
+                onChange={(e) => setEqSearch(e.target.value)}
+              />
+
+              <div className="mt-3 max-h-[55vh] overflow-y-auto rounded-lg border border-white/10">
+                {eqPickCandidates.length === 0 ? (
+                  <div className="p-4 text-sm text-white/60">
+                    Sin resultados.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-white/10">
+                    {eqPickCandidates.map((p) => (
+                      <button
+                        key={`${p.chunkDoc}_${p.id}`}
+                        type="button"
+                        className="w-full text-left p-3 hover:bg-white/5 flex items-start justify-between gap-3"
+                        onClick={async () => {
+                          try {
+                            if (eqPickerMode === "create") {
+                              await createEquivalenceWith(p);
+                            } else if (eqPickerMode === "globalCreate") {
+                              await createEquivalenceGlobal(p);
+                            } else if (eqPickerMode === "globalAdd") {
+                              await addProductToCodeGlobal(
+                                eqPickerTargetCode,
+                                eqPickerTargetChunk,
+                                p,
+                              );
+                            } else {
+                              await addProductToExistingCode(
+                                eqPickerTargetCode,
+                                eqPickerTargetChunk,
+                                p,
+                              );
+                            }
+                            closePicker();
+                          } catch (e) {
+                            console.error(e);
+                            toast.error(e?.message || "Error al procesar");
+                          }
+                        }}
+                      >
+                        <div className="min-w-0">
+                          <div
+                            className="font-semibold truncate"
+                            title={p.name}
+                          >
+                            {p.name || "(sin nombre)"}
+                          </div>
+                          <div className="text-[11px] text-white/60 truncate">
+                            <span className="font-mono">{p.sku || "-"}</span>
+                            {" • "}
+                            {p.category || "-"}
+                            {p.provider ? ` • ${p.provider}` : ""}
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs px-2 py-1 rounded-md bg-white/10 text-white/70">
+                          {eqPickerMode === "create" ||
+                          eqPickerMode === "globalCreate"
+                            ? "Crear"
+                            : "Agregar"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closePicker}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2425,6 +2890,7 @@ export default function Inventario() {
 }
 
 /* ================= helpers UI ================= */
+// ... (resto de helpers igual)
 function Th({ children, className = "" }) {
   const isSticky = className.includes("sticky");
   return (
@@ -2561,8 +3027,8 @@ function TogglePill({ checked, onChange, disabled = false }) {
         disabled
           ? "opacity-50 cursor-not-allowed ring-white/10 bg-white/5"
           : checked
-          ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816] ring-white/20"
-          : "bg-white/10 hover:bg-white/15 ring-white/10"
+            ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816] ring-white/20"
+            : "bg-white/10 hover:bg-white/15 ring-white/10"
       }`}
       title={checked ? "Activado" : "Desactivado"}
     >

@@ -1,7 +1,7 @@
 // /src/componentes/panel/HomeOverview.jsx
 "use client";
 
-import React, { useContext, useMemo, useState } from "react";
+import React, { useContext, useMemo, useState, useEffect } from "react";
 import ContextGeneral from "@/servicios/contextGeneral";
 
 const LOW_STOCK_THRESHOLD = 3; // alerta de poco stock
@@ -12,16 +12,13 @@ export default function HomeOverview({ location = "pv1" }) {
   const ctx = useContext(ContextGeneral);
 
   // Data desde Context
-  const productos = Array.isArray(ctx?.productos) ? ctx.productos : [];
-  const ventas = Array.isArray(ctx?.ventas) ? ctx.ventas : [];
+  const productosCtx = Array.isArray(ctx?.productos) ? ctx.productos : [];
+  const ventasCtx = Array.isArray(ctx?.ventas) ? ctx.ventas : [];
+  const ordenesCtx = Array.isArray(ctx?.ordenes) ? ctx.ordenes : [];
+
   const stockField = location === "pv2" ? "stockPv2" : "stockPv1";
-
-  // Taller
-  const ordenes = Array.isArray(ctx?.ordenes) ? ctx.ordenes : [];
   const loadingOrdenes = !!ctx?.loadingOrdenes;
-
-  // Loaders
-  const loadingVentas = ctx?.loader === true && ventas.length === 0;
+  const loadingVentas = ctx?.loader === true && ventasCtx.length === 0;
 
   // ====== Modal genérico ======
   const [modal, setModal] = useState({ open: false, title: "", content: null });
@@ -29,16 +26,40 @@ export default function HomeOverview({ location = "pv1" }) {
     setModal({ open: true, title, content });
   const closeModal = () => setModal({ open: false, title: "", content: null });
 
-  // ===== Derivados =====
-  const ventasSedeAll = useMemo(
-    () => (ventas || []).filter((v) => v?.location === location),
-    [ventas, location]
-  );
+  // =========================================================
+  // 1. DATA PROCESSING & SORTING (Ordenado por fecha DESC)
+  // =========================================================
+
+  // Productos: Ordenados alfabéticamente por defecto
+  const productos = useMemo(() => {
+    return [...productosCtx].sort((a, b) =>
+      (a.name || "").localeCompare(b.name || ""),
+    );
+  }, [productosCtx]);
+
+  // Ventas: Filtradas por sede y ordenadas por fecha (Nueva -> Vieja)
+  const ventasSedeAll = useMemo(() => {
+    return ventasCtx
+      .filter((v) => v?.location === location)
+      .sort((a, b) => getMs(b.createdAt, b._id) - getMs(a.createdAt, a._id));
+  }, [ventasCtx, location]);
 
   const ventasSedeActivas = useMemo(
     () => ventasSedeAll.filter((v) => !isCanceled(v)),
-    [ventasSedeAll]
+    [ventasSedeAll],
   );
+
+  // Órdenes: Ordenadas por fecha (Nueva -> Vieja)
+  const ordenes = useMemo(() => {
+    if (location !== "taller") return [];
+    return [...ordenesCtx].sort(
+      (a, b) => getMs(b.createdAt, b.id) - getMs(a.createdAt, a.id),
+    );
+  }, [ordenesCtx, location]);
+
+  // =========================================================
+  // 2. KPIs & DERIVADOS
+  // =========================================================
 
   const kpis = useMemo(() => {
     const now = Date.now();
@@ -54,22 +75,25 @@ export default function HomeOverview({ location = "pv1" }) {
     ventasSedeActivas.forEach((v) => {
       const ms = getMs(v?.createdAt, v?._id);
       const totalV = Number(v?.totals?.total ?? v?.total ?? 0);
+
+      // Hoy
       if (ms >= startOfToday) {
         hoyMonto += totalV;
         hoyTickets += 1;
       }
+      // Mes
       if (ms >= startOfMonth) {
         mesMonto += totalV;
         mesTickets += 1;
         itemsVendidosMes += (v?.lines || []).reduce(
           (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-          0
+          0,
         );
       }
     });
 
-    const lowStock = (productos || []).filter(
-      (p) => Number.parseInt(p?.[stockField] ?? 0, 10) <= LOW_STOCK_THRESHOLD
+    const lowStockCount = productos.filter(
+      (p) => Number.parseInt(p?.[stockField] ?? 0, 10) <= LOW_STOCK_THRESHOLD,
     ).length;
 
     return {
@@ -78,14 +102,14 @@ export default function HomeOverview({ location = "pv1" }) {
       mesMonto,
       mesTickets,
       itemsVendidosMes,
-      lowStock,
-      totalSkus: (productos || []).length,
+      lowStock: lowStockCount,
+      totalSkus: productos.length,
     };
   }, [ventasSedeActivas, productos, stockField]);
 
   const recientes = useMemo(
     () => ventasSedeAll.slice(0, RECENT_SALES_LIMIT),
-    [ventasSedeAll]
+    [ventasSedeAll],
   );
 
   const topProductos = useMemo(() => {
@@ -108,61 +132,61 @@ export default function HomeOverview({ location = "pv1" }) {
     return arr.slice(0, TOP_PRODUCTS_LIMIT);
   }, [ventasSedeActivas]);
 
-  // ===== Handlers detalle =====
+  // =========================================================
+  // 3. HANDLERS MODALES
+  // =========================================================
+
   function showVentasHoy() {
     const start = startOfDay(Date.now());
-    openModal(
-      "Ventas de HOY",
-      <VentasList
-        ventas={ventasSedeActivas.filter(
-          (v) => getMs(v.createdAt, v._id) >= start
-        )}
-      />
+    const filtered = ventasSedeActivas.filter(
+      (v) => getMs(v.createdAt, v._id) >= start,
     );
+    openModal("Ventas de HOY", <VentasList ventas={filtered} />);
   }
+
   function showVentasMes() {
     const start = startOfMonthMs(Date.now());
-    openModal(
-      "Ventas del MES",
-      <VentasList
-        ventas={ventasSedeActivas.filter(
-          (v) => getMs(v.createdAt, v._id) >= start
-        )}
-      />
+    const filtered = ventasSedeActivas.filter(
+      (v) => getMs(v.createdAt, v._id) >= start,
     );
+    openModal("Ventas del MES", <VentasList ventas={filtered} />);
   }
+
   function showSkus() {
-    const rows = [...(productos || [])].sort((a, b) =>
-      (a.name || "").localeCompare(b.name || "")
-    );
     openModal(
-      `SKUs en inventario (${rows.length}) — ${location.toUpperCase()}`,
-      <ProductosList rows={rows} stockField={stockField} />
+      `SKUs en inventario (${productos.length}) — ${location.toUpperCase()}`,
+      <ProductosList rows={productos} stockField={stockField} />,
     );
   }
+
   function showLowStock() {
-    const rows = (productos || [])
+    // Filtrar y ordenar por menor stock primero
+    const rows = productos
       .filter(
-        (p) => Number.parseInt(p?.[stockField] ?? 0, 10) <= LOW_STOCK_THRESHOLD
+        (p) => Number.parseInt(p?.[stockField] ?? 0, 10) <= LOW_STOCK_THRESHOLD,
       )
       .sort(
-        (a, b) => Number(a?.[stockField] ?? 0) - Number(b?.[stockField] ?? 0)
+        (a, b) => Number(a?.[stockField] ?? 0) - Number(b?.[stockField] ?? 0),
       );
+
     openModal(
       `Stock bajo (≤ ${LOW_STOCK_THRESHOLD}) — ${location.toUpperCase()}`,
-      <ProductosList rows={rows} stockField={stockField} />
+      <ProductosList rows={rows} stockField={stockField} />,
     );
   }
+
   function showVenta(v) {
     const titleBase = `Venta ${v._id} — ${fmtDate(getMs(v.createdAt, v._id))}`;
     openModal(
       isCanceled(v) ? `${titleBase} (ANULADA)` : titleBase,
-      <VentaDetalle venta={v} />
+      <VentaDetalle venta={v} />,
     );
   }
+
   function showOrden(o) {
     openModal(`Orden ${o.code || o.id.slice(-6)}`, <OrdenDetalle orden={o} />);
   }
+
   function showTopProductosFull() {
     const map = new Map();
     ventasSedeActivas.forEach((v) => {
@@ -179,14 +203,14 @@ export default function HomeOverview({ location = "pv1" }) {
         map.set(key, prev);
       });
     });
+    // Top 100 para no saturar
     const arr = Array.from(map.values())
       .sort((a, b) => b.qty - a.qty)
-      .slice(0, 50);
-    openModal(
-      "Top productos (últimos registros)",
-      <TopProductosList rows={arr} />
-    );
+      .slice(0, 100);
+
+    openModal("Top productos (Ranking)", <TopProductosList rows={arr} />);
   }
+
   function showTopProductoDetalle(tp) {
     const lines = [];
     ventasSedeActivas.forEach((v) => {
@@ -196,13 +220,18 @@ export default function HomeOverview({ location = "pv1" }) {
           lines.push({ venta: v, line: l });
       });
     });
+    // Ordenar detalle por fecha también
+    lines.sort((a, b) => getMs(b.venta.createdAt) - getMs(a.venta.createdAt));
+
     openModal(
       `Detalle: ${tp.name}`,
-      <TopProductoDetalle name={tp.name} lines={lines} />
+      <TopProductoDetalle name={tp.name} lines={lines} />,
     );
   }
 
-  // ===== UI =====
+  // =========================================================
+  // 4. RENDER UI
+  // =========================================================
   return (
     <section className="space-y-6 overflow-x-clip max-w-screen w-full">
       {/* KPIs */}
@@ -246,7 +275,7 @@ export default function HomeOverview({ location = "pv1" }) {
                   openModal("Órdenes activas", <OrdenesList rows={ordenes} />)
                 }
               >
-                Ver detalle
+                Ver todas / Buscar
               </button>
               <span className="text-xs text-white/60 shrink-0">
                 {loadingOrdenes ? "Cargando…" : `${ordenes.length} órdenes`}
@@ -254,7 +283,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </div>
           </div>
 
-          {/* Tabla md+ */}
+          {/* Tabla Resumida (Top 8) */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
             <table className="w-full table-fixed text-sm">
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
@@ -296,7 +325,7 @@ export default function HomeOverview({ location = "pv1" }) {
             </table>
           </div>
 
-          {/* Cards mobile */}
+          {/* Cards mobile (Top 8) */}
           <div className="md:hidden space-y-2 w-full">
             {ordenes.slice(0, 8).map((o) => (
               <button
@@ -347,12 +376,12 @@ export default function HomeOverview({ location = "pv1" }) {
                 className="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15"
                 onClick={() =>
                   openModal(
-                    "Todas las ventas recientes",
-                    <VentasList ventas={ventasSedeAll.slice(0, 100)} />
+                    "Historial de Ventas",
+                    <VentasList ventas={ventasSedeAll} />,
                   )
                 }
               >
-                Ver detalle
+                Ver todas / Buscar
               </button>
               <span className="text-xs text-white/60 shrink-0">
                 {loadingVentas ? "Cargando…" : `${recientes.length} mostradas`}
@@ -363,12 +392,11 @@ export default function HomeOverview({ location = "pv1" }) {
           {/* Tabla md+ */}
           <div className="hidden md:block overflow-x-auto overscroll-x-contain">
             <table className="w-full text-sm table-fixed">
-              {/* Evita estiramientos y mantiene columnas legibles */}
               <colgroup>
                 <col style={{ width: 160 }} /> {/* Fecha */}
                 <col style={{ width: 80 }} /> {/* Ítems */}
                 <col style={{ width: 120 }} /> {/* Total */}
-                <col /> {/* Por (rellena) */}
+                <col /> {/* Por */}
                 <col style={{ width: 100 }} /> {/* Estado */}
               </colgroup>
               <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
@@ -384,7 +412,7 @@ export default function HomeOverview({ location = "pv1" }) {
                 {recientes.map((v) => {
                   const items = (v?.lines || []).reduce(
                     (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-                    0
+                    0,
                   );
                   const totalNum = Number(v?.totals?.total ?? v?.total ?? 0);
                   const canceled = isCanceled(v);
@@ -439,7 +467,7 @@ export default function HomeOverview({ location = "pv1" }) {
               recientes.map((v) => {
                 const items = (v?.lines || []).reduce(
                   (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-                  0
+                  0,
                 );
                 const tot = Number(v?.totals?.total ?? v?.total ?? 0);
                 const canceled = isCanceled(v);
@@ -499,7 +527,7 @@ export default function HomeOverview({ location = "pv1" }) {
                 className="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15"
                 onClick={showTopProductosFull}
               >
-                Ver detalle
+                Ver más
               </button>
               <span className="text-xs text-white/60 shrink-0">
                 {topProductos.length} ítems
@@ -574,7 +602,7 @@ export default function HomeOverview({ location = "pv1" }) {
                 className="text-xs px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15"
                 onClick={showLowStock}
               >
-                Ver detalle
+                Buscar / Ver
               </button>
             </div>
 
@@ -583,11 +611,11 @@ export default function HomeOverview({ location = "pv1" }) {
                 .filter(
                   (p) =>
                     Number.parseInt(p?.[stockField] ?? 0, 10) <=
-                    LOW_STOCK_THRESHOLD
+                    LOW_STOCK_THRESHOLD,
                 )
                 .sort(
                   (a, b) =>
-                    Number(a?.[stockField] ?? 0) - Number(b?.[stockField] ?? 0)
+                    Number(a?.[stockField] ?? 0) - Number(b?.[stockField] ?? 0),
                 )
                 .slice(0, 10)
                 .map((p) => (
@@ -597,7 +625,7 @@ export default function HomeOverview({ location = "pv1" }) {
                     onClick={() =>
                       openModal(
                         `Producto: ${p.name}`,
-                        <ProductoDetalle prod={p} stockField={stockField} />
+                        <ProductoDetalle prod={p} stockField={stockField} />,
                       )
                     }
                   >
@@ -610,7 +638,7 @@ export default function HomeOverview({ location = "pv1" }) {
               {productos.filter(
                 (p) =>
                   Number.parseInt(p?.[stockField] ?? 0, 10) <=
-                  LOW_STOCK_THRESHOLD
+                  LOW_STOCK_THRESHOLD,
               ).length === 0 && (
                 <li className="text-sm text-white/60">Sin alertas.</li>
               )}
@@ -637,6 +665,19 @@ export default function HomeOverview({ location = "pv1" }) {
         .break-words {
           word-break: break-word;
           overflow-wrap: anywhere;
+        }
+        .inp-search {
+          background: #0f2837;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: white;
+          padding: 8px 12px;
+          border-radius: 8px;
+          width: 100%;
+          font-size: 14px;
+          outline: none;
+        }
+        .inp-search:focus {
+          border-color: rgba(255, 255, 255, 0.3);
         }
       `}</style>
     </section>
@@ -675,8 +716,8 @@ function Modal({ title, onClose, children }) {
         role="dialog"
         aria-modal="true"
       >
-        <div className="w-full rounded-2xl bg-[#0F2837] border border-white/10 shadow-2xl">
-          <div className="p-3 md:p-4 border-b border-white/10 sticky top-0 bg-[#0F2837]/95 backdrop-blur z-10 flex items-center justify-between rounded-t-2xl">
+        <div className="w-full rounded-2xl bg-[#0F2837] border border-white/10 shadow-2xl flex flex-col max-h-[85vh]">
+          <div className="p-3 md:p-4 border-b border-white/10 bg-[#0F2837] flex items-center justify-between rounded-t-2xl shrink-0">
             <h3 className="font-semibold truncate">{title}</h3>
             <button
               onClick={onClose}
@@ -686,21 +727,47 @@ function Modal({ title, onClose, children }) {
               ×
             </button>
           </div>
-          <div className="p-3 md:p-4 max-h-[75vh] overflow-auto">
-            {children}
-          </div>
+          <div className="p-3 md:p-4 overflow-auto flex-1">{children}</div>
         </div>
       </div>
     </div>
   );
 }
 
-/* ===== Listas (tabla md+ / cards mobile) ===== */
+/* ===== Listas con Buscador ===== */
+
 function VentasList({ ventas }) {
+  const [q, setQ] = useState("");
+
+  // Filtrado
+  const filtered = useMemo(() => {
+    const t = q.toLowerCase().trim();
+    if (!t) return ventas;
+    return ventas.filter((v) => {
+      const id = String(v._id || "").toLowerCase();
+      const mail = String(v.createdByEmail || "").toLowerCase();
+      const total = String(v.totals?.total ?? v.total ?? "").toLowerCase();
+      return id.includes(t) || mail.includes(t) || total.includes(t);
+    });
+  }, [ventas, q]);
+
   if (!ventas?.length)
     return <p className="text-sm text-white/60">Sin ventas.</p>;
+
   return (
-    <>
+    <div className="space-y-3">
+      {/* Buscador */}
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Buscar por Ticket #, Usuario o Monto..."
+        className="inp-search"
+        autoFocus
+      />
+      <div className="text-xs text-white/50 mb-2">
+        Viendo {filtered.length} de {ventas.length} ventas
+      </div>
+
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
         <table className="w-full text-sm table-fixed">
@@ -724,10 +791,11 @@ function VentasList({ ventas }) {
             </tr>
           </thead>
           <tbody>
-            {ventas.map((v) => {
+            {filtered.slice(0, 100).map((v) => {
+              // Limite visual
               const items = (v?.lines || []).reduce(
                 (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-                0
+                0,
               );
               const canceled = isCanceled(v);
               return (
@@ -771,10 +839,10 @@ function VentasList({ ventas }) {
 
       {/* Cards mobile */}
       <div className="md:hidden space-y-2 w-full">
-        {ventas.map((v) => {
+        {filtered.slice(0, 50).map((v) => {
           const items = (v?.lines || []).reduce(
             (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-            0
+            0,
           );
           const total = Number(v?.totals?.total ?? v?.total ?? 0);
           const canceled = isCanceled(v);
@@ -810,15 +878,47 @@ function VentasList({ ventas }) {
           );
         })}
       </div>
-    </>
+      {filtered.length > 100 && (
+        <p className="text-center text-xs text-white/40 pt-2">
+          Mostrando los primeros 100 resultados.
+        </p>
+      )}
+    </div>
   );
 }
 
 function OrdenesList({ rows }) {
+  const [q, setQ] = useState("");
+
+  const filtered = useMemo(() => {
+    const t = q.toLowerCase().trim();
+    if (!t) return rows;
+    return rows.filter((o) => {
+      const code = String(o.code || o.id || "").toLowerCase();
+      const plate = String(o.vehicle?.plate || "").toLowerCase();
+      const client = String(
+        o.customer?.name || o.customerEmail || "",
+      ).toLowerCase();
+      return code.includes(t) || plate.includes(t) || client.includes(t);
+    });
+  }, [rows, q]);
+
   if (!rows?.length)
     return <p className="text-sm text-white/60">Sin órdenes.</p>;
+
   return (
-    <>
+    <div className="space-y-3">
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Buscar por Patente, Cliente o Código..."
+        className="inp-search"
+        autoFocus
+      />
+      <div className="text-xs text-white/50 mb-2">
+        Viendo {filtered.length} de {rows.length} órdenes
+      </div>
+
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
         <table className="w-full table-fixed text-sm">
@@ -833,7 +933,7 @@ function OrdenesList({ rows }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((o) => (
+            {filtered.slice(0, 100).map((o) => (
               <tr key={o.id} className="border-t border-white/5">
                 <Td className="whitespace-nowrap">
                   {o.code || o.id.slice(-6)}
@@ -857,7 +957,7 @@ function OrdenesList({ rows }) {
 
       {/* Cards mobile */}
       <div className="md:hidden space-y-2 w-full">
-        {rows.map((o) => (
+        {filtered.slice(0, 50).map((o) => (
           <div
             key={o.id}
             className="rounded-xl border border-white/10 bg-white/5 p-3"
@@ -885,7 +985,7 @@ function OrdenesList({ rows }) {
           </div>
         ))}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1020,10 +1120,35 @@ function TopProductoDetalle({ name, lines }) {
 }
 
 function ProductosList({ rows, stockField }) {
+  const [q, setQ] = useState("");
+
+  const filtered = useMemo(() => {
+    const t = q.toLowerCase().trim();
+    if (!t) return rows;
+    return rows.filter((p) => {
+      const name = String(p.name || "").toLowerCase();
+      const sku = String(p.sku || "").toLowerCase();
+      const cat = String(p.category || "").toLowerCase();
+      return name.includes(t) || sku.includes(t) || cat.includes(t);
+    });
+  }, [rows, q]);
+
   if (!rows?.length)
     return <p className="text-sm text-white/60">Sin productos.</p>;
+
   return (
-    <>
+    <div className="space-y-3">
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Buscar por Nombre, SKU o Categoría..."
+        className="inp-search"
+        autoFocus
+      />
+      <div className="text-xs text-white/50 mb-2">
+        Viendo {filtered.length} de {rows.length} items
+      </div>
+
       {/* Tabla md+ */}
       <div className="hidden md:block overflow-x-auto overscroll-x-contain">
         <table className="w-full table-fixed text-sm">
@@ -1037,7 +1162,7 @@ function ProductosList({ rows, stockField }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((p) => (
+            {filtered.slice(0, 100).map((p) => (
               <tr
                 key={`${p.chunkDoc}_${p.id}`}
                 className="border-t border-white/5"
@@ -1057,7 +1182,7 @@ function ProductosList({ rows, stockField }) {
 
       {/* Cards mobile */}
       <div className="md:hidden space-y-2 w-full">
-        {rows.map((p) => (
+        {filtered.slice(0, 50).map((p) => (
           <div
             key={`${p.chunkDoc}_${p.id}`}
             className="rounded-xl border border-white/10 bg-white/5 p-3"
@@ -1078,7 +1203,37 @@ function ProductosList({ rows, stockField }) {
           </div>
         ))}
       </div>
-    </>
+    </div>
+  );
+}
+
+function ProductoDetalle({ prod, stockField }) {
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="grid grid-cols-2 gap-4">
+        <Info label="Nombre" value={prod.name} />
+        <Info label="SKU" value={prod.sku || "Sin SKU"} />
+        <Info label="Categoría" value={prod.category || "General"} />
+        <Info label="Proveedor" value={prod.provider || "Desconocido"} />
+        <Info
+          label={`Stock ${stockField.includes("Pv1") ? "PV1" : "PV2"}`}
+          value={prod[stockField] || 0}
+        />
+        <Info label="Precio Venta" value={money(prod.price)} />
+      </div>
+      {prod.equivalences && prod.equivalences.length > 0 && (
+        <div className="border-t border-white/10 pt-3">
+          <p className="font-semibold mb-2">Equivalencias</p>
+          <div className="flex flex-wrap gap-2">
+            {prod.equivalences.map((e, i) => (
+              <span key={i} className="px-2 py-1 bg-white/10 rounded text-xs">
+                {e.code}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1086,10 +1241,10 @@ function VentaDetalle({ venta }) {
   const subtotal = Number(venta?.totals?.subtotal ?? 0);
   const surcharge =
     Number(
-      venta?.totals?.surchargeAmount ?? venta?.payment?.surcharge?.amount ?? 0
+      venta?.totals?.surchargeAmount ?? venta?.payment?.surcharge?.amount ?? 0,
     ) || 0;
   const total = Number(
-    venta?.totals?.total ?? venta?.total ?? subtotal + surcharge
+    venta?.totals?.total ?? venta?.total ?? subtotal + surcharge,
   );
   const createdMs = getMs(venta?.createdAt, venta?._id);
   const canceled = isCanceled(venta);
@@ -1218,6 +1373,43 @@ function VentaDetalle({ venta }) {
   );
 }
 
+function OrdenDetalle({ orden }) {
+  // Componente simple para mostrar info de la orden
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="grid grid-cols-2 gap-4">
+        <Info label="ID" value={orden.id} />
+        <Info label="Código" value={orden.code || "-"} />
+        <Info label="Estado" value={orden.status} />
+        <Info label="Creada" value={fmtDate(getMs(orden.createdAt))} />
+
+        <div className="col-span-2 border-t border-white/10 pt-2 mt-1">
+          <p className="font-semibold text-white/80 mb-2">Vehículo</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Info label="Patente" value={orden.vehicle?.plate || "-"} />
+            <Info label="Modelo" value={orden.vehicle?.model || "-"} />
+          </div>
+        </div>
+
+        <div className="col-span-2 border-t border-white/10 pt-2 mt-1">
+          <p className="font-semibold text-white/80 mb-2">Cliente</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Info label="Nombre" value={orden.customer?.name || "-"} />
+            <Info label="Email" value={orden.customerEmail || "-"} />
+          </div>
+        </div>
+
+        <div className="col-span-2 text-right pt-4">
+          <span className="text-white/60 mr-2">Total Estimado:</span>
+          <span className="text-lg font-bold">
+            {money(orden.estimatedTotal || 0)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ===== Pequeños helpers UI ===== */
 function Info({ label, value }) {
   return (
@@ -1242,7 +1434,12 @@ function money(n) {
 }
 function getMs(ts, idFallback) {
   if (!ts) {
-    const n = Number(String(idFallback || "").replace("v_", ""));
+    // Intentar sacar timestamp del ID si es formato time-based
+    const n = Number(
+      String(idFallback || "")
+        .replace("v_", "")
+        .replace("b_", ""),
+    );
     return Number.isFinite(n) ? n : 0;
   }
   if (typeof ts?.toDate === "function") return ts.toDate().getTime();
@@ -1265,9 +1462,6 @@ function startOfMonthMs(ms) {
   d.setDate(1);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
-}
-function finalPriceContado(p) {
-  return p.discountActive && p.priceDiscount > 0 ? p.priceDiscount : p.price;
 }
 function isCanceled(v) {
   const s = String(v?.status || v?.estado || "").toLowerCase();

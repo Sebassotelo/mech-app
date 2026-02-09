@@ -26,30 +26,13 @@ export default function HistorialVentas({ location = "pv1" }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null); // venta seleccionada (drawer)
 
+  // ✅ Orden: default por fecha desc
+  const [sort, setSort] = useState({ key: "fecha", dir: "desc" }); // dir: "asc" | "desc"
+
   const ventasDeSede = useMemo(
     () => ventas.filter((v) => v?.location === location),
-    [ventas, location]
+    [ventas, location],
   );
-
-  const filtered = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return ventasDeSede
-      .filter((v) => {
-        if (!t) return true;
-        const totalTxt = String(v?.totals?.total ?? v?.total ?? "");
-        return (
-          v?.createdByEmail?.toLowerCase?.().includes(t) ||
-          totalTxt.includes(t) ||
-          (v?.lines || []).some(
-            (l) =>
-              l?.name?.toLowerCase?.().includes(t) ||
-              l?.sku?.toLowerCase?.().includes(t) ||
-              l?.category?.toLowerCase?.().includes(t)
-          )
-        );
-      })
-      .slice(0, 200);
-  }, [ventasDeSede, q]);
 
   // ===== Resumen (solo activas computan en monto/tickets) =====
   const resumen = useMemo(() => {
@@ -69,6 +52,111 @@ export default function HistorialVentas({ location = "pv1" }) {
 
     return { monto, tickets, anuladas };
   }, [ventasDeSede]);
+
+  // ===== Helpers de sort (valor comparable) =====
+  function getCreatedMs(v) {
+    return tsToMs(v?.createdAt) ?? idToMs(v?._id) ?? idToMs(v?.id) ?? 0;
+  }
+
+  function getSortValue(v, key) {
+    const createdMs = getCreatedMs(v);
+
+    const items = (v?.lines || []).reduce(
+      (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
+      0,
+    );
+    const subtotal = Number(v?.totals?.subtotal ?? 0);
+    const surcharge = Number(
+      v?.totals?.surchargeAmount ?? v?.payment?.surcharge?.amount ?? 0,
+    );
+    const total = Number(v?.totals?.total ?? v?.total ?? subtotal + surcharge);
+    const method = String(v?.payment?.method || "").toLowerCase();
+    const email = String(v?.createdByEmail || "").toLowerCase();
+    const sede = String(v?.location || "").toLowerCase();
+
+    switch (key) {
+      case "fecha":
+        return createdMs;
+      case "sede":
+        return sede;
+      case "items":
+        return items;
+      case "subtotal":
+        return subtotal;
+      case "recargo":
+        return surcharge;
+      case "total":
+        return total;
+      case "pago":
+        return method;
+      case "creadaPor":
+        return email;
+      default:
+        return createdMs;
+    }
+  }
+
+  function compare(a, b) {
+    const va = getSortValue(a, sort.key);
+    const vb = getSortValue(b, sort.key);
+
+    let c = 0;
+
+    // numbers
+    if (typeof va === "number" && typeof vb === "number") {
+      c = va === vb ? 0 : va < vb ? -1 : 1;
+    } else {
+      // strings (fallback)
+      const sa = String(va ?? "");
+      const sb = String(vb ?? "");
+      c = sa.localeCompare(sb, "es-AR", { sensitivity: "base" });
+    }
+
+    // dir
+    if (sort.dir === "desc") c = -c;
+
+    // tie-breaker: fecha desc siempre para estabilidad
+    if (c === 0) {
+      const ta = getCreatedMs(a);
+      const tb = getCreatedMs(b);
+      c = tb - ta; // desc
+    }
+    return c;
+  }
+
+  function toggleSort(key) {
+    setSort((prev) => {
+      if (prev.key === key) {
+        return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
+      }
+      // al cambiar de columna, arrancá por desc (más útil en números)
+      return { key, dir: "desc" };
+    });
+  }
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+
+    const base = ventasDeSede.filter((v) => {
+      if (!t) return true;
+      const totalTxt = String(v?.totals?.total ?? v?.total ?? "");
+      return (
+        v?.createdByEmail?.toLowerCase?.().includes(t) ||
+        totalTxt.includes(t) ||
+        (v?.lines || []).some(
+          (l) =>
+            l?.name?.toLowerCase?.().includes(t) ||
+            l?.sku?.toLowerCase?.().includes(t) ||
+            l?.category?.toLowerCase?.().includes(t),
+        )
+      );
+    });
+
+    // ✅ ordenar ANTES de cortar a 200
+    const sorted = [...base].sort(compare);
+
+    return sorted.slice(0, 200);
+  }, [ventasDeSede, q, sort.key, sort.dir]);
 
   return (
     <div className="min-w-0">
@@ -107,6 +195,14 @@ export default function HistorialVentas({ location = "pv1" }) {
         <span className="px-2 py-1 rounded-lg bg-[#FF3816]/10 border border-[#FF3816]/30 text-[#FFB0A1]">
           Anuladas: <strong>{resumen.anuladas}</strong>
         </span>
+
+        {/* mini indicador orden actual */}
+        <span className="ml-auto px-2 py-1 rounded-lg bg-white/5 border border-white/10 text-white/70">
+          Orden: <strong className="text-white">{sortLabel(sort.key)}</strong>{" "}
+          <strong className="text-white">
+            {sort.dir === "asc" ? "↑" : "↓"}
+          </strong>
+        </span>
       </div>
 
       {/* Tabla (solo md+) */}
@@ -123,18 +219,64 @@ export default function HistorialVentas({ location = "pv1" }) {
               <col style={{ width: 150 }} />
               <col />
             </colgroup>
+
             <thead className="bg-white/5 text-white/70 sticky top-0 z-10">
               <tr>
-                <Th className="whitespace-nowrap">Fecha</Th>
-                <Th className="whitespace-nowrap">Sede</Th>
-                <Th className="text-right whitespace-nowrap">Ítems</Th>
-                <Th className="text-right whitespace-nowrap">Subtotal</Th>
-                <Th className="text-right whitespace-nowrap">Recargo</Th>
-                <Th className="text-right whitespace-nowrap">Total</Th>
-                <Th className="whitespace-nowrap">Pago</Th>
-                <Th className="whitespace-nowrap">Creada por</Th>
+                <SortableTh
+                  label="Fecha"
+                  active={sort.key === "fecha"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("fecha")}
+                />
+                <SortableTh
+                  label="Sede"
+                  active={sort.key === "sede"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("sede")}
+                />
+                <SortableTh
+                  label="Ítems"
+                  className="text-right"
+                  active={sort.key === "items"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("items")}
+                />
+                <SortableTh
+                  label="Subtotal"
+                  className="text-right"
+                  active={sort.key === "subtotal"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("subtotal")}
+                />
+                <SortableTh
+                  label="Recargo"
+                  className="text-right"
+                  active={sort.key === "recargo"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("recargo")}
+                />
+                <SortableTh
+                  label="Total"
+                  className="text-right"
+                  active={sort.key === "total"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("total")}
+                />
+                <SortableTh
+                  label="Pago"
+                  active={sort.key === "pago"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("pago")}
+                />
+                <SortableTh
+                  label="Creada por"
+                  active={sort.key === "creadaPor"}
+                  dir={sort.dir}
+                  onClick={() => toggleSort("creadaPor")}
+                />
               </tr>
             </thead>
+
             <tbody>
               {loading ? (
                 <tr>
@@ -152,20 +294,19 @@ export default function HistorialVentas({ location = "pv1" }) {
                 filtered.map((v) => {
                   const items = (v?.lines || []).reduce(
                     (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-                    0
+                    0,
                   );
                   const subtotal = Number(v?.totals?.subtotal ?? 0);
                   const surcharge = Number(
                     v?.totals?.surchargeAmount ??
                       v?.payment?.surcharge?.amount ??
-                      0
+                      0,
                   );
                   const total = Number(
-                    v?.totals?.total ?? v?.total ?? subtotal + surcharge
+                    v?.totals?.total ?? v?.total ?? subtotal + surcharge,
                   );
                   const method = v?.payment?.method || "—";
-                  const createdMs =
-                    tsToMs(v.createdAt) ?? idToMs(v._id) ?? idToMs(v.id) ?? 0;
+                  const createdMs = getCreatedMs(v);
                   const canceled = isCanceled(v);
 
                   return (
@@ -232,18 +373,17 @@ export default function HistorialVentas({ location = "pv1" }) {
           filtered.map((v) => {
             const items = (v?.lines || []).reduce(
               (acc, l) => acc + (parseInt(l?.qty ?? 0, 10) || 0),
-              0
+              0,
             );
             const subtotal = Number(v?.totals?.subtotal ?? 0);
             const surcharge = Number(
-              v?.totals?.surchargeAmount ?? v?.payment?.surcharge?.amount ?? 0
+              v?.totals?.surchargeAmount ?? v?.payment?.surcharge?.amount ?? 0,
             );
             const total = Number(
-              v?.totals?.total ?? v?.total ?? subtotal + surcharge
+              v?.totals?.total ?? v?.total ?? subtotal + surcharge,
             );
             const method = v?.payment?.method || "—";
-            const createdMs =
-              tsToMs(v.createdAt) ?? idToMs(v._id) ?? idToMs(v.id) ?? 0;
+            const createdMs = getCreatedMs(v);
             const canceled = isCanceled(v);
 
             return (
@@ -315,10 +455,10 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
   const subtotal = Number(venta?.totals?.subtotal ?? 0);
   const surcharge =
     Number(
-      venta?.totals?.surchargeAmount ?? venta?.payment?.surcharge?.amount ?? 0
+      venta?.totals?.surchargeAmount ?? venta?.payment?.surcharge?.amount ?? 0,
     ) || 0;
   const total = Number(
-    venta?.totals?.total ?? venta?.total ?? subtotal + surcharge
+    venta?.totals?.total ?? venta?.total ?? subtotal + surcharge,
   );
 
   const method = venta?.payment?.method || "—";
@@ -330,7 +470,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
     if (!isAdmin4) return; // 🔒
     if (!firestore) return toast.error("Firestore no disponible");
     const ok = window.confirm(
-      "¿Anular esta venta?\n\nSe marcará como 'voided' dentro del chunk."
+      "¿Anular esta venta?\n\nSe marcará como 'voided' dentro del chunk.",
     );
     if (!ok) return;
 
@@ -354,8 +494,8 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
           prev.map((v) =>
             v._id === fieldKey && v.chunkDoc === chunkId
               ? { ...v, status: "voided" }
-              : v
-          )
+              : v,
+          ),
         );
       }
 
@@ -379,11 +519,11 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
     }
 
     const confirm1 = window.confirm(
-      "⚠️ Esta acción eliminará DEFINITIVAMENTE la venta del chunk.\n\n¿Continuar?"
+      "⚠️ Esta acción eliminará DEFINITIVAMENTE la venta del chunk.\n\n¿Continuar?",
     );
     if (!confirm1) return;
     const typed = window.prompt(
-      "Para confirmar, escribí: ELIMINAR\n\n(Esto no podrá deshacerse)"
+      "Para confirmar, escribí: ELIMINAR\n\n(Esto no podrá deshacerse)",
     );
     if ((typed || "").trim().toUpperCase() !== "ELIMINAR") return;
 
@@ -393,7 +533,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
 
       if (typeof ctx?.setVentas === "function") {
         ctx.setVentas((prev = []) =>
-          prev.filter((v) => !(v._id === fieldKey && v.chunkDoc === chunkId))
+          prev.filter((v) => !(v._id === fieldKey && v.chunkDoc === chunkId)),
         );
       }
 
@@ -401,7 +541,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
       onDeleted?.();
     } catch (e) {
       console.error(e);
-      toast.error("No se pudo eliminar definitivamente la venta.");
+      toast.error("No se pudo eliminar definitivamente.");
     }
   }
 
@@ -614,12 +754,35 @@ function KV({ label, value }) {
     </div>
   );
 }
+
 function Th({ children, className = "" }) {
   return <th className={`px-3 py-2 text-left ${className}`}>{children}</th>;
 }
 function Td({ children, className = "" }) {
   return <td className={`px-3 py-2 ${className}`}>{children}</td>;
 }
+
+function SortableTh({ label, onClick, active, dir, className = "" }) {
+  return (
+    <th
+      onClick={onClick}
+      className={`px-3 py-2 text-left select-none cursor-pointer hover:bg-white/5 ${className}`}
+      title="Ordenar"
+    >
+      <div className="inline-flex items-center gap-1">
+        <span className={`whitespace-nowrap ${active ? "text-white" : ""}`}>
+          {label}
+        </span>
+        <span
+          className={`text-xs ${active ? "text-white/90" : "text-white/40"}`}
+        >
+          {active ? (dir === "asc" ? "↑" : "↓") : "↕"}
+        </span>
+      </div>
+    </th>
+  );
+}
+
 function ReceiptIcon({ className = "" }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none">
@@ -671,4 +834,15 @@ function isCanceled(v) {
     v?.anulada === true ||
     v?.void === true
   );
+}
+function sortLabel(key) {
+  if (key === "fecha") return "Fecha";
+  if (key === "sede") return "Sede";
+  if (key === "items") return "Ítems";
+  if (key === "subtotal") return "Subtotal";
+  if (key === "recargo") return "Recargo";
+  if (key === "total") return "Total";
+  if (key === "pago") return "Pago";
+  if (key === "creadaPor") return "Creada por";
+  return "Fecha";
 }

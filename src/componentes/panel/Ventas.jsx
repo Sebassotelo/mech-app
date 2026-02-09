@@ -71,6 +71,9 @@ export default function Ventas({ location = "pv1" }) {
   const [onlyStock, setOnlyStock] = useState(false);
   const [cart, setCart] = useState({});
 
+  // ====== Estado de Equivalencias (Nuevo) ======
+  const [showEq, setShowEq] = useState(true);
+
   // ====== Estado de pago (persistente) ======
   const [paymentMethod, setPaymentMethod] = useState("efectivo");
   const [applyExtra, setApplyExtra] = useState(false);
@@ -94,15 +97,13 @@ export default function Ventas({ location = "pv1" }) {
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [showColsPanel, setShowColsPanel] = useState(false);
   const colsBtnRef = useRef(null);
+  const colsPanelRef = useRef(null);
 
   // ===== Drawer Carrito
   const [cartOpen, setCartOpen] = useState(false);
 
   // ==========================
   // Carga inicial desde localStorage
-  // - Aplica descuento automáticamente si:
-  //   * el método es "efectivo" (por LS o default)
-  //   * y NO había nada guardado para d_apply
   // ==========================
   useEffect(() => {
     try {
@@ -127,7 +128,6 @@ export default function Ventas({ location = "pv1" }) {
 
       // Si no había nada para d_apply, por defecto:
       // - si es efectivo => descuento aplicado
-      // - si no => sin descuento
       const applyDiscountInit = da !== null ? da === "true" : pm === "efectivo";
 
       const discountModeInit = dm || "percent";
@@ -158,20 +158,14 @@ export default function Ventas({ location = "pv1" }) {
     setHydrated(true);
   }, []);
 
-  // 🔁 Persistir configuración de pago/recargos/descuentos en localStorage
+  // 🔁 Persistir configuración
   useEffect(() => {
-    if (!hydrated) return; // hasta no cargar, no escribir
-
+    if (!hydrated) return;
     try {
       localStorage.setItem(LS.method, paymentMethod);
       localStorage.setItem(LS.apply, String(applyExtra));
       localStorage.setItem(LS.mode, extraMode);
-      localStorage.setItem(
-        LS.percent,
-        String(
-          discountMode === "percent" ? extraPercent ?? 0 : extraPercent ?? 0
-        )
-      ); // extraPercent igual, se guarda tal cual
+      localStorage.setItem(LS.percent, String(extraPercent ?? 0));
       localStorage.setItem(LS.fixed, String(extraFixed ?? 0));
       localStorage.setItem(LS.d_apply, String(applyDiscount));
       localStorage.setItem(LS.d_mode, discountMode);
@@ -202,8 +196,8 @@ export default function Ventas({ location = "pv1" }) {
     function onDocClick(e) {
       if (!showColsPanel) return;
       const btn = colsBtnRef.current;
+      const panel = colsPanelRef.current;
       if (btn && (btn === e.target || btn.contains(e.target))) return;
-      const panel = document.getElementById("cols-panel");
       if (panel && panel.contains(e.target)) return;
       setShowColsPanel(false);
     }
@@ -214,7 +208,10 @@ export default function Ventas({ location = "pv1" }) {
   // cerrar drawer con ESC
   useEffect(() => {
     function onKey(e) {
-      if (e.key === "Escape") setCartOpen(false);
+      if (e.key === "Escape") {
+        setCartOpen(false);
+        setShowColsPanel(false);
+      }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -222,23 +219,120 @@ export default function Ventas({ location = "pv1" }) {
 
   const stockField = location === "pv2" ? "stockPv2" : "stockPv1";
 
+  // ============================================================
+  //   LÓGICA DE FILTRADO AVANZADA (Directa + Indirecta)
+  // ============================================================
+
+  // Helper: Extraer códigos válidos y limpiar "fantasmas"
+  const getValidEqCodes = (product) => {
+    if (!Array.isArray(product.equivalences)) return [];
+    return product.equivalences
+      .map((e) => String(e.code || "").trim())
+      .filter((c) => {
+        // 1. Descartar muy cortos
+        if (c.length <= 2) return false;
+
+        // 2. FILTRO ESPECÍFICO: Ocultar el código basura exacto
+        if (c === "EQ-X8YULX12") return false;
+
+        return true;
+      });
+  };
+
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
-    return productosCtx
-      .filter((p) => {
-        const inTxt =
-          !t ||
-          p.name?.toLowerCase().includes(t) ||
-          p.sku?.toLowerCase().includes(t) ||
-          p.category?.toLowerCase().includes(t);
+
+    // Si no hay búsqueda, mostramos todo (filtrado solo por stock/estado)
+    if (!t) {
+      return productosCtx
+        .filter((p) => {
+          const hasStock = !onlyStock || parseInt(p[stockField] ?? 0, 10) > 0;
+          return p.enabled !== false && hasStock;
+        })
+        .map((p) => ({
+          ...p,
+          _matchType: "direct",
+          _validEqs: getValidEqCodes(p),
+        }))
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }
+
+    // --- FASE 1: Búsqueda Directa ---
+    // Productos que coinciden por Nombre, SKU o que TIENEN el código EQ buscado
+    const directMatches = [];
+    const directMatchIds = new Set();
+    const relevantEqCodes = new Set(); // Guardaremos los códigos de los productos encontrados
+
+    productosCtx.forEach((p) => {
+      // 1. Validar estado y stock base
+      const hasStock = !onlyStock || parseInt(p[stockField] ?? 0, 10) > 0;
+      if (p.enabled === false || !hasStock) return;
+
+      const validCodes = getValidEqCodes(p);
+
+      // 2. Match por Texto (Nombre/SKU/Cat)
+      const matchText =
+        (p.name || "").toLowerCase().includes(t) ||
+        (p.sku || "").toLowerCase().includes(t) ||
+        (p.category || "").toLowerCase().includes(t);
+
+      // 3. Match por Código EQ específico (si el usuario busca "EQ-123")
+      const matchCode = validCodes.some((c) => c.toLowerCase().includes(t));
+
+      if (matchText || matchCode) {
+        directMatches.push(p);
+        directMatchIds.add(p.id);
+        // Guardamos los códigos de este producto para buscar a sus "hermanos"
+        validCodes.forEach((c) => relevantEqCodes.add(c));
+      }
+    });
+
+    // --- FASE 2: Búsqueda Indirecta (Equivalencias) ---
+    // Buscamos productos que NO coincidieron por nombre, pero comparten código con los que sí
+    let indirectMatches = [];
+
+    if (showEq && relevantEqCodes.size > 0) {
+      indirectMatches = productosCtx.filter((p) => {
+        // 1. Validar estado/stock
         const hasStock = !onlyStock || parseInt(p[stockField] ?? 0, 10) > 0;
-        return inTxt && p.enabled !== false && hasStock;
-      })
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [productosCtx, q, onlyStock, stockField]);
+        if (p.enabled === false || !hasStock) return false;
+
+        // 2. Si ya está en direct matches, ignorar
+        if (directMatchIds.has(p.id)) return false;
+
+        // 3. Chequear si tiene algún código en común con los encontrados en Fase 1
+        const pCodes = getValidEqCodes(p);
+        const isEquivalent = pCodes.some((c) => relevantEqCodes.has(c));
+
+        return isEquivalent;
+      });
+    }
+
+    // Unimos y agregamos flag visual para saber por qué aparece
+    const resultDirect = directMatches.map((p) => ({
+      ...p,
+      _matchType: "direct",
+      _validEqs: getValidEqCodes(p),
+    }));
+    const resultIndirect = indirectMatches.map((p) => ({
+      ...p,
+      _matchType: "indirect",
+      _validEqs: getValidEqCodes(p),
+    }));
+
+    const combined = [...resultDirect, ...resultIndirect];
+
+    // Ordenar: Directos primero, luego alfabético
+    return combined.sort((a, b) => {
+      if (a._matchType !== b._matchType) {
+        return a._matchType === "direct" ? -1 : 1;
+      }
+      return (a.name || "").localeCompare(b.name || "");
+    });
+  }, [productosCtx, q, onlyStock, stockField, showEq]);
 
   // ===== Paginación =====
-  const [pageSize, setPageSize] = useState(10); // default 10
+  const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(1);
   useEffect(() => setPage(1), [q, onlyStock, productosCtx, pageSize]);
 
@@ -254,7 +348,7 @@ export default function Ventas({ location = "pv1" }) {
     pageSize === 0 ? totalCount : Math.min(totalCount, startIndex + pageSize);
   const pageItems = useMemo(
     () => filtered.slice(startIndex, endIndex),
-    [filtered, startIndex, endIndex]
+    [filtered, startIndex, endIndex],
   );
 
   /* =========================
@@ -264,9 +358,9 @@ export default function Ventas({ location = "pv1" }) {
     () =>
       Object.values(cart).reduce(
         (acc, it) => acc + it.qty * finalPrice(it.prod),
-        0
+        0,
       ),
-    [cart]
+    [cart],
   );
 
   const currentExtraValue =
@@ -302,8 +396,6 @@ export default function Ventas({ location = "pv1" }) {
 
   /* =========================
    * Cambio de medio de pago
-   * - efectivo: activa descuento
-   * - otros: solo destilda el descuento, NO resetea montos
    * ========================= */
   const handleChangePaymentMethod = (e) => {
     const value = e.target.value;
@@ -311,7 +403,6 @@ export default function Ventas({ location = "pv1" }) {
 
     if (value === "efectivo") {
       setApplyDiscount(true);
-      // Si no había nada cargado, dejamos % por defecto
       if (!discountPercent && !discountFixed) {
         setDiscountMode("percent");
       }
@@ -320,8 +411,6 @@ export default function Ventas({ location = "pv1" }) {
           "Abajo configurás si el descuento es en % o en monto fijo y el valor.",
       });
     } else {
-      // Para otros medios, limpiar solo el check del descuento,
-      // pero conservar el valor para reutilizarlo al volver a efectivo.
       setApplyDiscount(false);
     }
   };
@@ -335,7 +424,6 @@ export default function Ventas({ location = "pv1" }) {
     if (available <= current) return toast.error("Stock insuficiente");
 
     const nextQty = current + 1;
-
     setCart((c) => ({ ...c, [prod.id]: { prod, qty: nextQty } }));
 
     toast.success(`Agregado al carrito: ${prod.name} (x${nextQty})`, {
@@ -488,7 +576,6 @@ export default function Ventas({ location = "pv1" }) {
         currency: "ARS",
       },
       paymentLike: {
-        // 🔐 Recargos y descuentos quedan guardados acá
         surcharge: {
           applied: !!applyExtra,
           mode: extraMode,
@@ -539,7 +626,7 @@ export default function Ventas({ location = "pv1" }) {
           <td style="text-align:right">${l.qty}</td>
           <td style="text-align:right">${fmt(l.unitPrice)}</td>
           <td style="text-align:right">${fmt(l.subtotal)}</td>
-        </tr>`
+        </tr>`,
       )
       .join("");
 
@@ -593,7 +680,7 @@ export default function Ventas({ location = "pv1" }) {
       <tr>
         <td class="right" style="width:80%;">Subtotal</td>
         <td class="right" style="width:20%;">${fmt(
-          b?.totals?.subtotal || 0
+          b?.totals?.subtotal || 0,
         )}</td>
       </tr>
       <tr>
@@ -695,7 +782,7 @@ export default function Ventas({ location = "pv1" }) {
       `Sumar al stock (${location.toUpperCase()}) para "${
         prod.name
       }"\nIngrese cantidad (puede ser negativa para restar):`,
-      "1"
+      "1",
     );
     if (deltaStr == null) return;
     const delta = parseInt(deltaStr, 10);
@@ -723,7 +810,7 @@ export default function Ventas({ location = "pv1" }) {
           loading: "Actualizando stock…",
           success: "Stock actualizado",
           error: (e) => e?.message || "No se pudo actualizar",
-        }
+        },
       );
 
       if (typeof ctx?.setProductos === "function") {
@@ -732,7 +819,7 @@ export default function Ventas({ location = "pv1" }) {
             if (p.id !== prod.id) return p;
             const cur = parseInt(p[stockField] ?? 0, 10);
             return { ...p, [stockField]: Math.max(0, cur + delta) };
-          })
+          }),
         );
       }
     } catch (e) {
@@ -810,7 +897,6 @@ export default function Ventas({ location = "pv1" }) {
           method: paymentMethod,
           provider: paymentMethod === "mercadago" ? "mercadopago" : "manual",
           status: "not_started",
-          // 🔐 Recargos y descuentos quedan guardados también en la venta
           surcharge: {
             applied: !!applyExtra,
             mode: extraMode,
@@ -844,7 +930,7 @@ export default function Ventas({ location = "pv1" }) {
             const cur = parseInt(p[stockField] ?? 0, 10);
             const next = Math.max(0, cur - hit.qty);
             return { ...p, [stockField]: next };
-          })
+          }),
         );
       }
     };
@@ -920,116 +1006,146 @@ export default function Ventas({ location = "pv1" }) {
   const cartCount = Object.values(cart).length;
   const cartTotalStr = money(total);
 
+  // Responsive polish: FAB full-width en mobile + safe-area
+  const fabClass =
+    "fixed z-40 shadow-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] font-medium " +
+    "rounded-2xl text-sm " +
+    "left-3 right-3 bottom-[calc(env(safe-area-inset-bottom,0px)+12px)] md:left-auto md:right-4 md:bottom-4 md:w-auto " +
+    "px-4 py-3 flex items-center justify-center gap-2";
+
   return (
-    <div className="relative pb-20">
-      {/* Controles + Tabla: ocupa todo el ancho */}
-      <div className="mb-3 flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
-        {/* Input de búsqueda + botón limpiar debajo */}
-        <div className="w-full sm:flex-1 flex flex-col gap-1">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Buscar producto por nombre / SKU / categoría…"
-            className="w-full rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
-          />
-          <button
-            type="button"
-            onClick={() => setQ("")}
-            disabled={!q.trim()}
-            className={`inline-flex items-center justify-center rounded-lg border px-2 py-1 text-xs transition ${
-              q.trim()
-                ? "border-white/20 bg-white/5 text-white/80 hover:bg-white/10"
-                : "border-white/5 bg-transparent text-white/30 cursor-not-allowed"
-            }`}
-          >
-            Limpiar búsqueda
-          </button>
-        </div>
+    <div className="relative pb-24">
+      {/* Controles + Tabla */}
+      <div className="mb-3 w-full rounded-2xl border border-white/10 bg-white/[0.03] p-2 sm:p-3">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
+          {/* Input de búsqueda + botón limpiar debajo */}
+          <div className="w-full sm:flex-1 flex flex-col gap-1 min-w-0">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Buscar por Nombre / SKU / Categoría / Código equivalencia…"
+              className="w-full rounded-xl bg-[#0C212D] border border-white/10 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setQ("")}
+                disabled={!q.trim()}
+                className={`inline-flex items-center justify-center rounded-lg border px-2 py-1 text-xs transition ${
+                  q.trim()
+                    ? "border-white/20 bg-white/5 text-white/80 hover:bg-white/10"
+                    : "border-white/5 bg-transparent text-white/30 cursor-not-allowed"
+                }`}
+              >
+                Limpiar
+              </button>
 
-        <label className="inline-flex items-center gap-2 text-sm text-white/80">
-          <input
-            type="checkbox"
-            checked={onlyStock}
-            onChange={(e) => setOnlyStock(e.target.checked)}
-            className="accent-[#EE7203]"
-          />
-          Solo con stock
-        </label>
-
-        <label className="inline-flex items-center gap-2 text-sm text-white/80">
-          Ver:
-          <select
-            value={pageSize}
-            onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
-            className="rounded-lg bg-[#0C212D] border border-white/10 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
-          >
-            <option value={10}>10</option>
-            <option value={25}>25</option>
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-            <option value={0}>Todos</option>
-          </select>
-        </label>
-
-        {/* Selector de columnas */}
-        <div className="relative">
-          <button
-            ref={colsBtnRef}
-            onClick={() => setShowColsPanel((v) => !v)}
-            className="px-3 py-2 rounded-lg text-sm bg-white/10 hover:bg-white/15"
-            title="Configurar columnas"
-          >
-            Columnas
-          </button>
-          {showColsPanel && (
-            <div
-              id="cols-panel"
-              className="absolute right-0 mt-2 w-56 rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
-            >
-              <p className="text-xs text-white/60 mb-2">
-                Mostrar/ocultar columnas
-              </p>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                {[
-                  ["sku", "SKU"],
-                  ["name", "Nombre"],
-                  ["category", "Cat."],
-                  ["price", "Precio"],
-                  ["stock", "Stock"],
-                  ["action", "Acción"],
-                ].map(([key, label]) => (
-                  <label
-                    key={key}
-                    className="inline-flex items-center gap-2 text-white/90"
-                  >
-                    <input
-                      type="checkbox"
-                      className="accent-[#EE7203]"
-                      checked={!!cols[key]}
-                      onChange={(e) =>
-                        setCols((c) => ({ ...c, [key]: e.target.checked }))
-                      }
-                    />
-                    {label}
-                  </label>
-                ))}
-              </div>
-              <div className="flex items-center justify-end gap-2 mt-3">
-                <button
-                  onClick={() => setCols(DEFAULT_COLS)}
-                  className="px-2 py-1 text-xs rounded-md bg-white/10 hover:bg-white/15"
-                >
-                  Reset
-                </button>
-                <button
-                  onClick={() => setShowColsPanel(false)}
-                  className="px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
-                >
-                  OK
-                </button>
-              </div>
+              {/* hint de equivalencias */}
+              {q.trim() && (
+                <span className="text-[11px] text-white/50 truncate">
+                  Busca también por equivalencia (EQ-...)
+                </span>
+              )}
             </div>
-          )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-2 text-sm text-white/80 select-none">
+              <input
+                type="checkbox"
+                checked={onlyStock}
+                onChange={(e) => setOnlyStock(e.target.checked)}
+                className="accent-[#EE7203]"
+              />
+              Solo stock
+            </label>
+
+            <label className="inline-flex items-center gap-2 text-sm text-white/80 select-none">
+              <input
+                type="checkbox"
+                checked={showEq}
+                onChange={(e) => setShowEq(e.target.checked)}
+                className="accent-[#EE7203]"
+              />
+              Mostrar equivalencias
+            </label>
+
+            <label className="inline-flex items-center gap-2 text-sm text-white/80">
+              Ver:
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+                className="rounded-lg bg-[#0C212D] border border-white/10 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={0}>Todos</option>
+              </select>
+            </label>
+
+            {/* Selector de columnas */}
+            <div className="relative">
+              <button
+                ref={colsBtnRef}
+                onClick={() => setShowColsPanel((v) => !v)}
+                className="px-3 py-2 rounded-lg text-sm bg-white/10 hover:bg-white/15"
+                title="Configurar columnas"
+              >
+                Columnas
+              </button>
+              {showColsPanel && (
+                <div
+                  ref={colsPanelRef}
+                  className="absolute right-0 mt-2 w-64 max-w-[85vw] rounded-xl border border-white/10 bg-[#0C212D] shadow-xl p-3 z-20"
+                >
+                  <p className="text-xs text-white/60 mb-2">
+                    Mostrar/ocultar columnas
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    {[
+                      ["sku", "SKU"],
+                      ["name", "Nombre"],
+                      ["category", "Cat."],
+                      ["price", "Precio"],
+                      ["stock", "Stock"],
+                      ["action", "Acción"],
+                    ].map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="inline-flex items-center gap-2 text-white/90"
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-[#EE7203]"
+                          checked={!!cols[key]}
+                          onChange={(e) =>
+                            setCols((c) => ({ ...c, [key]: e.target.checked }))
+                          }
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end gap-2 mt-3">
+                    <button
+                      onClick={() => setCols(DEFAULT_COLS)}
+                      className="px-2 py-1 text-xs rounded-md bg-white/10 hover:bg-white/15"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={() => setShowColsPanel(false)}
+                      className="px-3 py-1.5 text-xs rounded-md bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                    >
+                      OK
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1081,23 +1197,61 @@ export default function Ventas({ location = "pv1" }) {
             ) : (
               pageItems.map((p) => {
                 const stock = parseInt(p[stockField] ?? 0, 10);
+                const isIndirect = p._matchType === "indirect";
+                const validEqs = p._validEqs || [];
+
                 return (
                   <tr
                     key={`${p.chunkDoc}_${p.id}`}
-                    className="border-t border-white/5"
+                    className={`border-t border-white/5 hover:bg-white/[0.03] transition ${isIndirect ? "bg-[#EE7203]/5" : ""}`}
                   >
                     {cols.sku && (
                       <Td title={p.sku || "-"} className="whitespace-nowrap">
                         <span className="block truncate">{p.sku || "-"}</span>
                       </Td>
                     )}
+
                     {cols.name && (
                       <Td title={p.name || "-"} className="overflow-hidden">
-                        <span className="block truncate max-w-[32rem]">
-                          {p.name}
-                        </span>
+                        <div className="min-w-0">
+                          <span className="block truncate max-w-[32rem]">
+                            {p.name}
+                          </span>
+
+                          {/* Renderizado de códigos de equivalencia filtrados */}
+                          {validEqs.length > 0 && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              <span className="text-[10px] uppercase font-bold text-[#EE7203] bg-[#EE7203]/10 border border-[#EE7203]/20 px-1.5 py-0.5 rounded">
+                                Eq:
+                              </span>
+                              {validEqs.slice(0, 5).map((m, i) => (
+                                <span
+                                  key={i}
+                                  className={`text-[11px] font-mono px-1.5 py-0.5 rounded border ${
+                                    isIndirect // Si es indirecto, resaltamos las EQs porque son la razón de aparición
+                                      ? "bg-[#EE7203]/20 text-[#EE7203] border-[#EE7203]/30"
+                                      : "bg-white/5 text-white/90 border-white/10"
+                                  }`}
+                                >
+                                  {m}
+                                </span>
+                              ))}
+                              {validEqs.length > 5 && (
+                                <span className="text-[10px] text-white/50">
+                                  ...
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {isIndirect && (
+                            <div className="text-[10px] text-[#EE7203] mt-0.5 font-medium">
+                              ↳ Relacionado por equivalencia
+                            </div>
+                          )}
+                        </div>
                       </Td>
                     )}
+
                     {cols.category && (
                       <Td
                         title={p.category || "-"}
@@ -1108,11 +1262,13 @@ export default function Ventas({ location = "pv1" }) {
                         </span>
                       </Td>
                     )}
+
                     {cols.price && (
                       <Td className="text-right whitespace-nowrap">
                         {money(finalPrice(p))}
                       </Td>
                     )}
+
                     {cols.stock && (
                       <Td className="text-right">
                         <div className="inline-flex items-center gap-2 justify-end w-full">
@@ -1123,36 +1279,28 @@ export default function Ventas({ location = "pv1" }) {
                               className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/15 text-xs"
                               title={`Ajustar stock: ${p.name || ""}`}
                             >
-                              + stock
+                              +
                             </button>
                           )}
                         </div>
                       </Td>
                     )}
+
                     {cols.action && (
                       <Td className="text-right">
                         <div className="inline-flex items-center justify-end gap-2 w-full">
                           <button
                             onClick={() => addToCart(p)}
                             disabled={stock <= 0}
-                            className={`px-3 py-1.5 rounded-lg text-xs ${
+                            className={`px-3 py-1.5 rounded-lg text-xs transition ${
                               stock > 0
-                                ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                                ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816] hover:opacity-95"
                                 : "bg-white/10 text-white/50 cursor-not-allowed"
                             }`}
                             title={`Agregar: ${p.name || ""}`}
                           >
                             Agregar
                           </button>
-                          {canEditStock && (
-                            <button
-                              onClick={() => addStockQuick(p)}
-                              className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
-                              title={`Ajustar stock: ${p.name || ""}`}
-                            >
-                              Ajustar
-                            </button>
-                          )}
                         </div>
                       </Td>
                     )}
@@ -1177,47 +1325,82 @@ export default function Ventas({ location = "pv1" }) {
         ) : (
           pageItems.map((p) => {
             const stock = parseInt(p[stockField] ?? 0, 10);
+            const isIndirect = p._matchType === "indirect";
+            const validEqs = p._validEqs || [];
+
             return (
               <div
                 key={`${p.chunkDoc}_${p.id}`}
-                className="rounded-xl border border-white/10 bg-white/5 p-3 w-full"
+                className={`rounded-2xl border border-white/10 p-3 w-full ${isIndirect ? "bg-[#EE7203]/10" : "bg-white/5"}`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 break-words">
+                  <div className="min-w-0">
                     <div
                       className="text-sm font-semibold truncate"
                       title={p.name}
                     >
                       {p.name}
                     </div>
+
                     <div
                       className="text-xs text-white/60 mt-0.5 truncate"
                       title={`SKU ${p.sku || "-"} • ${p.category || "-"}`}
                     >
                       SKU {p.sku || "-"} • {p.category || "-"}
                     </div>
+
+                    {validEqs.length > 0 && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        <span className="text-[10px] uppercase font-bold text-[#EE7203] bg-[#EE7203]/10 border border-[#EE7203]/20 px-1.5 py-0.5 rounded">
+                          Eq:
+                        </span>
+                        {validEqs.slice(0, 3).map((m, i) => (
+                          <span
+                            key={i}
+                            className={`text-[11px] font-mono px-1.5 py-0.5 rounded border ${
+                              isIndirect
+                                ? "bg-[#EE7203]/20 text-[#EE7203] border-[#EE7203]/30"
+                                : "bg-white/5 text-white/90 border-white/10"
+                            }`}
+                          >
+                            {m}
+                          </span>
+                        ))}
+                        {validEqs.length > 3 && (
+                          <span className="text-[10px] text-white/50">...</span>
+                        )}
+                      </div>
+                    )}
+                    {isIndirect && (
+                      <div className="text-[10px] text-[#EE7203] mt-1">
+                        ↳ Producto equivalente
+                      </div>
+                    )}
+
                     <div className="text-xs text-white/70 mt-1">
                       {money(finalPrice(p))} • Stock {stock}
                     </div>
                   </div>
-                  <div className="flex flex-col gap-1 items-end">
+
+                  <div className="flex flex-col gap-1 items-end shrink-0">
                     <button
                       onClick={() => addToCart(p)}
                       disabled={stock <= 0}
-                      className={`shrink-0 px-3 py-1.5 rounded-lg text-xs ${
+                      className={`px-3 py-1.5 rounded-lg text-xs transition ${
                         stock > 0
-                          ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816]"
+                          ? "bg-gradient-to-r from-[#EE7203] to-[#FF3816] hover:opacity-95"
                           : "bg-white/10 text-white/50 cursor-not-allowed"
                       }`}
                     >
                       Agregar
                     </button>
+
                     {canEditStock && (
                       <button
                         onClick={() => addStockQuick(p)}
                         className="px-3 py-1.5 rounded-lg text-xs bg-white/10 hover:bg-white/15"
                       >
-                        + stock
+                        +
                       </button>
                     )}
                   </div>
@@ -1280,10 +1463,12 @@ export default function Ventas({ location = "pv1" }) {
       {/* ===== Floating Cart Button (FAB) ===== */}
       <button
         onClick={() => setCartOpen(true)}
-        className="fixed bottom-4 right-4 z-40 px-4 py-3 rounded-2xl shadow-lg bg-gradient-to-r from-[#EE7203] to-[#FF3816] text-sm font-medium"
+        className={fabClass}
         title="Abrir carrito"
       >
-        Carrito · {cartCount} · {cartTotalStr}
+        <span className="truncate">
+          Carrito · {cartCount} · {cartTotalStr}
+        </span>
       </button>
 
       {/* ===== Drawer Carrito ===== */}
@@ -1315,12 +1500,12 @@ export default function Ventas({ location = "pv1" }) {
 
             <div className="p-4 overflow-y-auto flex-1 space-y-4">
               {/* Pago / Recargo / Descuento */}
-              <div className="rounded-xl border border-white/10 p-3 bg-white/5">
+              <div className="rounded-2xl border border-white/10 p-3 bg-white/5">
                 <p className="text-xs text-white/70 mb-1.5">Medio de pago</p>
                 <select
                   value={paymentMethod}
                   onChange={handleChangePaymentMethod}
-                  className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                  className="w-full inp mb-2"
                 >
                   {PAYMENT_METHODS.map((m) => (
                     <option key={m.id} value={m.id}>
@@ -1373,7 +1558,7 @@ export default function Ventas({ location = "pv1" }) {
                     <select
                       value={extraMode}
                       onChange={(e) => setExtraMode(e.target.value)}
-                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                      className="inp"
                     >
                       <option value="percent">% Porcentaje</option>
                       <option value="fixed">$ Monto fijo</option>
@@ -1392,7 +1577,7 @@ export default function Ventas({ location = "pv1" }) {
                       placeholder={
                         extraMode === "percent" ? "% ej: 10" : "$ ej: 500"
                       }
-                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                      className="inp"
                     />
                   </div>
                   {applyExtra && (
@@ -1429,7 +1614,7 @@ export default function Ventas({ location = "pv1" }) {
                     <select
                       value={discountMode}
                       onChange={(e) => setDiscountMode(e.target.value)}
-                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                      className="inp"
                     >
                       <option value="percent">% Porcentaje</option>
                       <option value="fixed">$ Monto fijo</option>
@@ -1448,7 +1633,7 @@ export default function Ventas({ location = "pv1" }) {
                       placeholder={
                         discountMode === "percent" ? "% ej: 10" : "$ ej: 500"
                       }
-                      className="rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70"
+                      className="inp"
                     />
                   </div>
                   {applyDiscount && (
@@ -1483,7 +1668,8 @@ export default function Ventas({ location = "pv1" }) {
                           {prod.sku}
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
+
+                      <div className="flex items-center gap-2 shrink-0">
                         <input
                           type="number"
                           value={qty}
@@ -1492,14 +1678,15 @@ export default function Ventas({ location = "pv1" }) {
                           onChange={(e) => setQty(prod.id, e.target.value)}
                         />
                         <button
-                          className="px-2 py-1 rounded-lg bg-white/10"
+                          className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15"
                           onClick={() => removeFromCart(prod.id)}
                           title="Quitar del carrito"
                         >
                           x
                         </button>
                       </div>
-                      <div className="text-right w-24 whitespace-nowrap">
+
+                      <div className="text-right w-24 whitespace-nowrap shrink-0">
                         {money(finalPrice(prod) * qty)}
                       </div>
                     </div>
@@ -1535,12 +1722,14 @@ export default function Ventas({ location = "pv1" }) {
                     Recargar
                   </button>
                 </div>
+
                 <input
                   value={qBudgets}
                   onChange={(e) => setQBudgets(e.target.value)}
                   placeholder="Buscar presupuesto…"
                   className="w-full rounded-lg bg-[#0C212D] border border-white/10 px-2.5 py-2 text-sm outline-none focus:ring-2 focus:ring-[#EE7203]/70 mb-2"
                 />
+
                 <div className="max-h-64 overflow-auto rounded-lg border border-white/10">
                   {loadingBudgets ? (
                     <div className="p-3 text-white/60 text-sm">Cargando…</div>
@@ -1565,16 +1754,15 @@ export default function Ventas({ location = "pv1" }) {
                             <div
                               className="text-xs text-white/60 truncate"
                               title={`${b.createdByEmail || "—"} • ${String(
-                                b.location || ""
-                              ).toUpperCase()} • ${money(
-                                b?.totals?.total || 0
-                              )}`}
+                                b.location || "",
+                              ).toUpperCase()} • ${money(b?.totals?.total || 0)}`}
                             >
                               {b.createdByEmail || "—"} •{" "}
                               {String(b.location || "").toUpperCase()} •{" "}
                               {money(b?.totals?.total || 0)}
                             </div>
                           </div>
+
                           <div className="shrink-0 flex items-center gap-1">
                             <button
                               onClick={() => loadBudgetIntoCart(b)}
@@ -1603,6 +1791,7 @@ export default function Ventas({ location = "pv1" }) {
                     ))
                   )}
                 </div>
+
                 <p className="text-[11px] text-white/50 mt-1">
                   * Se muestran los últimos 25 resultados filtrados.
                 </p>
@@ -1635,9 +1824,12 @@ export default function Ventas({ location = "pv1" }) {
         .inp {
           background: #0c212d;
           border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 0.75rem;
+          border-radius: 0.5rem;
           padding: 0.4rem 0.6rem;
           outline: none;
+          color: white;
+          width: 100%;
+          font-size: 0.875rem;
         }
         .inp:focus {
           box-shadow: 0 0 0 2px rgba(238, 114, 3, 0.6);
