@@ -185,7 +185,7 @@ function Context(props) {
           (err) => {
             console.error("onSnapshot(usuarios):", err);
             setPermisos([]);
-          }
+          },
         );
         userDocUnsubRef.current = unsubDoc;
       } else {
@@ -236,7 +236,7 @@ function Context(props) {
         console.error("RT categorias:", err);
         setCategorias([]);
         setLoader(false);
-      }
+      },
     );
     unsubsRef.current.push(unsubCategorias);
 
@@ -249,8 +249,6 @@ function Context(props) {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
             if (k.startsWith("p_") && v) {
-              // ⚠️ Guardamos id real y chunkDoc consistente
-              // (en tu Inventario luego lo normalizás a id=v.id, chunkDoc=d.id)
               prods.push({
                 id: v?.id || k.replace("p_", ""),
                 chunkDoc: v?.chunkDoc || d.id,
@@ -266,7 +264,7 @@ function Context(props) {
         console.error("RT productos:", err);
         setProductos([]);
         setLoader(false);
-      }
+      },
     );
     unsubsRef.current.push(unsubProductos);
 
@@ -305,7 +303,7 @@ function Context(props) {
         setEquivalenciasDocs([]);
         setEquivalenciasMap({});
         setEquivalenciasLoading(false);
-      }
+      },
     );
     unsubsRef.current.push(unsubEquivalencias);
 
@@ -317,9 +315,24 @@ function Context(props) {
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
-            if (k.startsWith("v_") && v) arr.push({ id: k, ...v });
+            if (k.startsWith("v_") && v) {
+              // ⚠️ CORRECCIÓN APLICADA: Inyectamos chunkDoc y aseguramos id
+              arr.push({
+                ...v,
+                id: v.id || k, // ID de la venta
+                _id: v.id || k, // Copia de seguridad
+                chunkDoc: d.id, // ID del documento contenedor (para eliminar)
+              });
+            }
           }
         });
+        // Ordenamos por fecha de creación (más reciente primero)
+        arr.sort((a, b) => {
+          const ta = a.createdAt?.seconds || 0;
+          const tb = b.createdAt?.seconds || 0;
+          return tb - ta;
+        });
+
         setVentas(arr);
         setLoader(false);
       },
@@ -327,7 +340,7 @@ function Context(props) {
         console.error("RT ventas:", err);
         setVentas([]);
         setLoader(false);
-      }
+      },
     );
     unsubsRef.current.push(unsubVentas);
 
@@ -339,7 +352,14 @@ function Context(props) {
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
-            if (k.startsWith("b_") && v) list.push({ id: k, ...v });
+            if (k.startsWith("b_") && v) {
+              // ⚠️ CORRECCIÓN APLICADA: Inyectamos chunkDoc
+              list.push({
+                ...v,
+                id: v.id || k,
+                chunkDoc: d.id,
+              });
+            }
           }
         });
         setPresupuestos(list);
@@ -349,7 +369,7 @@ function Context(props) {
         console.error("RT presupuestos:", err);
         setPresupuestos([]);
         setPresupuestosLoading(false);
-      }
+      },
     );
     unsubsRef.current.push(unsubPresupuestos);
 
@@ -366,7 +386,7 @@ function Context(props) {
       (err) => {
         console.error("RT caja:", err);
         setEgresos([]);
-      }
+      },
     );
     unsubsRef.current.push(unsubCaja);
 
