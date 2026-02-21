@@ -1,8 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useContext, useEffect, useState } from "react";
 import Head from "next/head";
 import { Toaster } from "sonner";
+import Loader from "./Loader";
+import ContextGeneral from "@/servicios/contextGeneral";
 
 function Layout({ children, title }) {
+  const context = useContext(ContextGeneral);
   return (
     <div style={{ display: "grid" }}>
       <Head>
@@ -28,6 +31,7 @@ function Layout({ children, title }) {
         />
       </Head>
 
+      {context.loader && <Loader text="Cargando..." fullScreen={true} />}
       <Toaster position="top-center" />
 
       <div>{children}</div>

@@ -23,7 +23,8 @@ const PERMISOS_SEMILLA = {
 };
 
 function Context(props) {
-  const [loader, setLoader] = useState(false);
+  // Iniciamos el loader en true para que tape la pantalla desde el milisegundo cero
+  const [loader, setLoader] = useState(true);
   const [user, setUser] = useState(null);
   const [user1, setUser1] = useState(null);
   const [permisos, setPermisos] = useState([]); // array de números
@@ -54,7 +55,6 @@ function Context(props) {
     return `${cd}_${id}`;
   }
 
-  // Índice rápido key -> producto (para resolver members a info del producto)
   const productosByKeyRef = useRef(new Map());
   useEffect(() => {
     const m = new Map();
@@ -65,7 +65,6 @@ function Context(props) {
     productosByKeyRef.current = m;
   }, [productos]);
 
-  // Devuelve grupos equivalencia del producto actual (enriquecido)
   function getEquivalenceGroupsForProduct(prod) {
     const refs = Array.isArray(prod?.equivalences) ? prod.equivalences : [];
     if (!refs.length) return [];
@@ -107,7 +106,6 @@ function Context(props) {
     return out;
   }
 
-  // Devuelve productos equivalentes dado un code (opcional excluyendo uno)
   function getEquivalentProductsByCode(code, excludeKey) {
     const c = String(code || "").trim();
     if (!c) return [];
@@ -171,7 +169,6 @@ function Context(props) {
         setUser1(usuarioFirebase);
         await ensureUserExists(usuarioFirebase);
 
-        // RT permisos del usuario
         const uref = doc(firestore, "usuarios", usuarioFirebase.email);
         const unsubDoc = onSnapshot(
           uref,
@@ -192,6 +189,7 @@ function Context(props) {
         setUser(null);
         setUser1(null);
         setPermisos([]);
+        setLoader(false); // Si no hay usuario, apagamos el loader para mostrar la vista de login
       }
     });
 
@@ -212,7 +210,7 @@ function Context(props) {
   const unsubsRef = useRef([]);
 
   useEffect(() => {
-    if (!firestore) return;
+    if (!firestore || !user) return; // Solo suscribirse si hay usuario logueado
 
     unsubsRef.current.forEach((u) => {
       try {
@@ -221,21 +219,44 @@ function Context(props) {
     });
     unsubsRef.current = [];
 
+    // --- SISTEMA DE CARGA SINCRONIZADA ---
     setLoader(true);
     setPresupuestosLoading(true);
     setEquivalenciasLoading(true);
+
+    // Registramos las colecciones que necesitamos esperar
+    const loadingState = {
+      categorias: true,
+      productos: true,
+      equivalencias: true,
+      ventas: true,
+      presupuestos: true,
+      caja: true,
+    };
+
+    const checkGlobalLoader = () => {
+      // Si algún valor en loadingState sigue siendo true, significa que falta cargar algo
+      const stillLoading = Object.values(loadingState).some(
+        (state) => state === true,
+      );
+      if (!stillLoading) {
+        setLoader(false); // Todo cargó, apagamos el loader global
+      }
+    };
 
     // --- Categorías ---
     const unsubCategorias = onSnapshot(
       collection(firestore, "categorias"),
       (snap) => {
         setCategorias(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        setLoader(false);
+        loadingState.categorias = false;
+        checkGlobalLoader();
       },
       (err) => {
         console.error("RT categorias:", err);
         setCategorias([]);
-        setLoader(false);
+        loadingState.categorias = false;
+        checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubCategorias);
@@ -258,12 +279,14 @@ function Context(props) {
           }
         });
         setProductos(prods);
-        setLoader(false);
+        loadingState.productos = false;
+        checkGlobalLoader();
       },
       (err) => {
         console.error("RT productos:", err);
         setProductos([]);
-        setLoader(false);
+        loadingState.productos = false;
+        checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubProductos);
@@ -296,13 +319,19 @@ function Context(props) {
 
         setEquivalenciasDocs(chunks);
         setEquivalenciasMap(map);
+
         setEquivalenciasLoading(false);
+        loadingState.equivalencias = false;
+        checkGlobalLoader();
       },
       (err) => {
         console.error("RT equivalencias:", err);
         setEquivalenciasDocs([]);
         setEquivalenciasMap({});
+
         setEquivalenciasLoading(false);
+        loadingState.equivalencias = false;
+        checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubEquivalencias);
@@ -316,7 +345,6 @@ function Context(props) {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
             if (k.startsWith("v_") && v) {
-              // ⚠️ CORRECCIÓN APLICADA: Inyectamos chunkDoc y aseguramos id
               arr.push({
                 ...v,
                 id: v.id || k, // ID de la venta
@@ -326,7 +354,6 @@ function Context(props) {
             }
           }
         });
-        // Ordenamos por fecha de creación (más reciente primero)
         arr.sort((a, b) => {
           const ta = a.createdAt?.seconds || 0;
           const tb = b.createdAt?.seconds || 0;
@@ -334,12 +361,14 @@ function Context(props) {
         });
 
         setVentas(arr);
-        setLoader(false);
+        loadingState.ventas = false;
+        checkGlobalLoader();
       },
       (err) => {
         console.error("RT ventas:", err);
         setVentas([]);
-        setLoader(false);
+        loadingState.ventas = false;
+        checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubVentas);
@@ -353,7 +382,6 @@ function Context(props) {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
             if (k.startsWith("b_") && v) {
-              // ⚠️ CORRECCIÓN APLICADA: Inyectamos chunkDoc
               list.push({
                 ...v,
                 id: v.id || k,
@@ -363,12 +391,18 @@ function Context(props) {
           }
         });
         setPresupuestos(list);
+
         setPresupuestosLoading(false);
+        loadingState.presupuestos = false;
+        checkGlobalLoader();
       },
       (err) => {
         console.error("RT presupuestos:", err);
         setPresupuestos([]);
+
         setPresupuestosLoading(false);
+        loadingState.presupuestos = false;
+        checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubPresupuestos);
@@ -382,10 +416,16 @@ function Context(props) {
           ...d.data(),
         }));
         setEgresos(list);
+
+        loadingState.caja = false;
+        checkGlobalLoader();
       },
       (err) => {
         console.error("RT caja:", err);
         setEgresos([]);
+
+        loadingState.caja = false;
+        checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubCaja);
@@ -398,7 +438,7 @@ function Context(props) {
       });
       unsubsRef.current = [];
     };
-  }, [firestore]);
+  }, [firestore, user]); // Añadido `user` a las dependencias para que dispare las subscripciones al loguearse
 
   // ==========================
   // Provider
@@ -410,14 +450,14 @@ function Context(props) {
         firestore,
         user,
         user1,
-        permisos, // array [1,2,3...]
+        permisos,
         loader,
         setLoader,
 
         categorias,
         productos,
         ventas,
-        egresos, // 👈 viene de colección "caja"
+        egresos,
         presupuestos,
         presupuestosLoading,
 

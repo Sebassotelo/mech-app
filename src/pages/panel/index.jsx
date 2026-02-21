@@ -11,6 +11,8 @@ import Cuentas from "@/componentes/panel/Cuentas"; // ✅ solo admin(4)
 import Caja from "@/componentes/panel/Caja"; // ✅ NUEVO
 import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/router";
+// Asumo que importaste tu componente Loader, ajústalo según tu ruta:
+import Loader from "@/componentes/Loader";
 
 export default function Dashboard() {
   const ctx = useContext(ContextGeneral);
@@ -18,9 +20,6 @@ export default function Dashboard() {
 
   // ───────── Auth Guard
   const [authReady, setAuthReady] = useState(false);
-
-  // ───────── Resto de hooks
-  const didFetch = useRef(false);
 
   // Estado UI
   const [location, setLocation] = useState("pv1"); // pv1 | pv2 | taller
@@ -62,39 +61,8 @@ export default function Dashboard() {
     return () => unsub();
   }, [ctx?.auth, router]);
 
-  // ───────── Fetch inicial
-  useEffect(() => {
-    if (!ctx || didFetch.current || !ctx?.user) return;
-    didFetch.current = true;
-
-    const needCats =
-      !Array.isArray(ctx.categorias) || ctx.categorias.length === 0;
-    const needProds =
-      !Array.isArray(ctx.productos) || ctx.productos.length === 0;
-    const needVentas = !Array.isArray(ctx.ventas) || ctx.ventas.length === 0;
-
-    if (!needCats && !needProds && !needVentas) return;
-
-    try {
-      ctx.setLoader?.(true);
-      const tasks = [];
-      if (needCats && typeof ctx.fetchCategorias === "function")
-        tasks.push(ctx.fetchCategorias());
-      if (needProds && typeof ctx.fetchProductos === "function")
-        tasks.push(ctx.fetchProductos());
-      if (needVentas && typeof ctx.fetchVentas === "function")
-        tasks.push(ctx.fetchVentas());
-      Promise.all(tasks)
-        .catch((e) => {
-          console.error(e);
-          toast.error("No se pudieron cargar datos iniciales");
-        })
-        .finally(() => ctx.setLoader?.(false));
-    } catch (e) {
-      console.error(e);
-      ctx.setLoader?.(false);
-    }
-  }, [ctx]);
+  // ❌ SE ELIMINÓ EL useEffect DEL "FETCH INICIAL"
+  // El Context.jsx ya se encarga de cargar todo vía onSnapshot y manejar ctx.loader
 
   // ───────── Persistencia UI (respetando permisos)
   useEffect(() => {
@@ -229,18 +197,28 @@ export default function Dashboard() {
     setMobileNavOpen(false);
   };
 
-  // ───────── Gates visuales
+  // ───────── Gates visuales (MODIFICADOS PARA USAR EL LOADER DEL CONTEXT) ─────────
+
+  // 1. Esperamos a que Firebase Auth responda
   if (!authReady) {
     return (
-      <div className="min-h-screen grid place-items-center bg-[#0C212D] text-white">
-        <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-          <span className="h-2 w-2 rounded-full bg-[#EE7203] animate-pulse" />
-          <span className="text-sm text-white/80">Cargando panel…</span>
-        </div>
+      <div className="min-h-screen bg-[#0C212D] text-white">
+        <Loader fullScreen={true} text="Verificando sesión..." />
       </div>
     );
   }
+
+  // 2. Si no hay usuario, retornamos null (el useEffect superior redirige a "/")
   if (!ctx?.user) return null;
+
+  // 3. Esperamos a que el Context descargue todas las colecciones iniciales
+  if (ctx?.loader) {
+    return (
+      <div className="min-h-screen bg-[#0C212D] text-white">
+        <Loader fullScreen={true} text="Cargando sistema..." />
+      </div>
+    );
+  }
 
   // ───────── UI principal
   return (
