@@ -14,6 +14,13 @@ import { useRouter } from "next/router";
 // Asumo que importaste tu componente Loader, ajústalo según tu ruta:
 import Loader from "@/componentes/Loader";
 
+// ✅ NUEVO: Importes de Taller (Asegurate de tener estos archivos en @/componentes/taller)
+import HomeTaller from "@/componentes/taller/HomeTaller";
+import ClientesTaller from "@/componentes/taller/ClientesTaller";
+import TrabajosTaller from "@/componentes/taller/TrabajosTaller";
+import PresupuestosTaller from "@/componentes/taller/PresupuestosTaller";
+import MecanicosTaller from "@/componentes/taller/MecanicosTaller";
+
 export default function Dashboard() {
   const ctx = useContext(ContextGeneral);
   const router = useRouter();
@@ -23,7 +30,7 @@ export default function Dashboard() {
 
   // Estado UI
   const [location, setLocation] = useState("pv1"); // pv1 | pv2 | taller
-  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | cuentas | reportes | caja
+  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | cuentas | reportes | caja | clientes | trabajos | presupuestos | mecanicos
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // ───────── Permisos
@@ -61,9 +68,6 @@ export default function Dashboard() {
     return () => unsub();
   }, [ctx?.auth, router]);
 
-  // ❌ SE ELIMINÓ EL useEffect DEL "FETCH INICIAL"
-  // El Context.jsx ya se encarga de cargar todo vía onSnapshot y manejar ctx.loader
-
   // ───────── Persistencia UI (respetando permisos)
   useEffect(() => {
     try {
@@ -79,7 +83,7 @@ export default function Dashboard() {
     if (!firstAllowedLocation) return;
     if (!allowedFor(location)) {
       setLocation(firstAllowedLocation);
-      setActive(defaultActiveFor(firstAllowedLocation));
+      setActive(defaultActiveFor(firstAllowedLocation, isAdmin4));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstAllowedLocation, permisos]);
@@ -96,39 +100,55 @@ export default function Dashboard() {
     } catch {}
   }, [location]);
 
-  // ───────── Nav dinámico (agrega CUENTAS sólo si es admin4)
+  // ───────── Nav dinámico
   const navItems = useMemo(() => {
     const base = [];
 
     // Si NO hay permiso para la sede actual (salvo admin), solo muestro "Inicio"
     if (!allowedFor(location)) {
       base.push({ id: "home", label: "Inicio", icon: HomeIcon });
-      if (isAdmin4)
+      if (isAdmin4 && location !== "taller") {
         base.push({ id: "cuentas", label: "Cuentas", icon: BankIcon });
+      }
       return base;
     }
 
     if (location === "taller") {
-      base.push({ id: "home", label: "Inicio", icon: HomeIcon });
+      // ✅ Si es Admin (4), ve todo el Taller (Pero no 'Cuentas')
+      if (isAdmin4) {
+        base.push(
+          { id: "home", label: "Resumen", icon: HomeIcon },
+          { id: "clientes", label: "Clientes", icon: UsersIcon },
+          { id: "trabajos", label: "Trabajos", icon: WrenchIcon },
+          { id: "presupuestos", label: "Presupuestos", icon: FileTextIcon },
+          { id: "mecanicos", label: "Mecánicos", icon: ToolIcon },
+        );
+      } else {
+        // ✅ Si es Mecánico (3) y no Admin, ve SOLO su panel
+        base.push({ id: "mecanicos", label: "Mis Trabajos", icon: ToolIcon });
+      }
     } else {
+      // ✅ Vistas PV1 y PV2
       base.push(
         { id: "home", label: "Inicio", icon: HomeIcon },
         { id: "ventas", label: "Ventas", icon: CartIcon },
-        { id: "caja", label: "Caja", icon: CashIcon }, // ✅ NUEVO
+        { id: "caja", label: "Caja", icon: CashIcon },
         { id: "inventario", label: "Inventario", icon: BoxIcon },
         { id: "stock", label: "Stock", icon: StockIcon },
         { id: "historial", label: "Historial de ventas", icon: HistoryIcon },
       );
+      // Solo en PV1 o PV2 agregamos Cuentas si es admin 4
+      if (isAdmin4) {
+        base.push({ id: "cuentas", label: "Cuentas", icon: BankIcon });
+      }
     }
-    if (isAdmin4)
-      base.push({ id: "cuentas", label: "Cuentas", icon: BankIcon });
     return base;
   }, [location, isAdmin4, permisos]);
 
   // Si cambia permisos o sede y la vista actual ya no es válida, reacomodo
   useEffect(() => {
     const validIds = new Set(navItems.map((n) => n.id));
-    if (!validIds.has(active)) setActive(defaultActiveFor(location));
+    if (!validIds.has(active)) setActive(defaultActiveFor(location, isAdmin4));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, navItems]);
 
@@ -137,13 +157,26 @@ export default function Dashboard() {
   const CurrentView = useMemo(() => {
     if (blockedByPerm && !isAdmin4) return <AccessDenied location={location} />;
 
+    // ✅ TALLER
+    if (location === "taller") {
+      if (active === "clientes" && isAdmin4) return <ClientesTaller />;
+      if (active === "trabajos" && isAdmin4) return <TrabajosTaller />;
+      if (active === "presupuestos" && isAdmin4) return <PresupuestosTaller />;
+      if (active === "mecanicos") return <MecanicosTaller />;
+      if (active === "home" && isAdmin4) return <HomeTaller />;
+
+      // Fallback por seguridad
+      return <MecanicosTaller />;
+    }
+
+    // ✅ PV1 / PV2
     if (active === "ventas") return <VentasView location={location} />;
-    if (active === "caja") return <CajaView location={location} />; // ✅ NUEVO
+    if (active === "caja") return <CajaView location={location} />;
     if (active === "inventario") return <InventarioView location={location} />;
     if (active === "stock") return <StockView location={location} />;
     if (active === "historial") return <HistorialView location={location} />;
     if (active === "reportes") return <ReportesView location={location} />;
-    if (active === "cuentas") return <CuentasView />; // ✅ solo aparece si isAdmin4
+    if (active === "cuentas" && isAdmin4) return <CuentasView />;
     return <HomeView location={location} />;
   }, [active, location, blockedByPerm, isAdmin4]);
 
@@ -180,15 +213,9 @@ export default function Dashboard() {
       }
     }
 
-    if (loc === "taller") {
-      toast.info("Módulo Taller: próximamente");
-      setLocation("taller");
-      setActive("home");
-    } else {
-      setLocation(loc);
-      if (active === "home" || location === "taller") {
-        setActive(defaultActiveFor(loc));
-      }
+    setLocation(loc);
+    if (active === "home" || location === "taller" || loc === "taller") {
+      setActive(defaultActiveFor(loc, isAdmin4));
     }
   };
 
@@ -197,7 +224,7 @@ export default function Dashboard() {
     setMobileNavOpen(false);
   };
 
-  // ───────── Gates visuales (MODIFICADOS PARA USAR EL LOADER DEL CONTEXT) ─────────
+  // ───────── Gates visuales ─────────
 
   // 1. Esperamos a que Firebase Auth responda
   if (!authReady) {
@@ -233,7 +260,7 @@ export default function Dashboard() {
           canTaller={canTaller}
         />
         <NavList navItems={navItems} active={active} onClickItem={setActive} />
-        <div className="p-4 border-t border-white/10 text-xs text-white/50">
+        <div className="p-4 border-t border-white/10 text-xs text-white/50 mt-auto">
           © {new Date().getFullYear()} Mecánico App
         </div>
       </aside>
@@ -248,7 +275,7 @@ export default function Dashboard() {
       )}
       <div
         ref={drawerRef}
-        className={`fixed z-50 inset-y-0 left-0 w-72 bg-[#112C3E] border-r border-white/10 md:hidden transition-transform duration-200 ${
+        className={`fixed z-50 inset-y-0 left-0 w-72 bg-[#112C3E] border-r border-white/10 md:hidden transition-transform duration-200 flex flex-col ${
           mobileNavOpen ? "translate-x-0" : "-translate-x-full"
         }`}
         onMouseDown={(e) => e.stopPropagation()}
@@ -256,14 +283,14 @@ export default function Dashboard() {
         aria-modal="true"
         aria-label="Menú de navegación"
       >
-        <div className="flex items-center justify-between p-4 border-b border-white/10">
+        <div className="flex items-center justify-between p-4 border-b border-white/10 shrink-0">
           <div>
             <p className="text-xs text-white/60 leading-none">Mecánico App</p>
             <h1 className="text-base font-semibold">Panel</h1>
           </div>
         </div>
 
-        <div className="p-4 border-b border-white/10">
+        <div className="p-4 border-b border-white/10 shrink-0">
           <p className="text-[11px] uppercase tracking-widest text-white/50 mb-2">
             Seleccioná la sede
           </p>
@@ -284,15 +311,15 @@ export default function Dashboard() {
           />
         </nav>
 
-        <div className="p-4 border-t border-white/10 text-xs text-white/50">
+        <div className="p-4 border-t border-white/10 text-xs text-white/50 shrink-0">
           © {new Date().getFullYear()} Mecánico App
         </div>
       </div>
 
       {/* Contenido */}
-      <main className="flex-1 min-w-0 overflow-x-hidden">
+      <main className="flex-1 min-w-0 overflow-x-hidden flex flex-col">
         {/* Topbar mobile */}
-        <div className="md:hidden sticky top-0 z-30 bg-[#0C212D]/95 backdrop-blur border-b border-white/10">
+        <div className="md:hidden sticky top-0 z-30 bg-[#0C212D]/95 backdrop-blur border-b border-white/10 shrink-0">
           <div className="mx-auto w-full max-w-screen-xl px-4 py-3 flex items-center justify-between">
             <button
               onClick={() => setMobileNavOpen(true)}
@@ -321,9 +348,9 @@ export default function Dashboard() {
         </div>
 
         {/* Contenedor limitado */}
-        <div className="mx-auto w-full max-w-screen-xl px-4 sm:px-6 py-6">
+        <div className="flex-1 mx-auto w-full max-w-screen-xl px-4 sm:px-6 py-6 flex flex-col min-h-0">
           {/* Encabezado desktop */}
-          <div className="hidden md:flex items-start sm:items-center justify-between mb-6 gap-3">
+          <div className="hidden md:flex items-start sm:items-center justify-between mb-6 gap-3 shrink-0">
             <div className="min-w-0">
               <h2 className="text-2xl font-semibold tracking-tight truncate">
                 {titleFor(active, location)}
@@ -334,9 +361,7 @@ export default function Dashboard() {
             </div>
 
             <span
-              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg:white/5 ring-1 ring-white/10 ${
-                location === "taller" ? "opacity-80" : ""
-              }`}
+              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg:white/5 ring-1 ring-white/10`}
             >
               <Dot className={dotColor(location)} />
               <strong className="font-semibold">
@@ -344,22 +369,15 @@ export default function Dashboard() {
                   ? "Punto de Venta 1"
                   : location === "pv2"
                     ? "Punto de Venta 2"
-                    : "Taller"}
+                    : "Taller Mecánico"}
               </strong>
-              {location === "taller" && (
-                <span className="ml-1 text-[11px] px-2 py-0.5 rounded-lg bg-white/5 ring-1 ring-white/10">
-                  Próximamente
-                </span>
-              )}
             </span>
           </div>
 
           {/* Visualizador */}
-          <div className="rounded-2xl bg-[#112C3E]/80 border border-white/10 shadow-xl min-w-0">
-            <div className="min-w-0 w-full overflow-x-auto overscroll-x-contain">
-              <div className="p-4 sm:p-6 min-w-0">
-                {location === "taller" ? <TallerPlaceholder /> : CurrentView}
-              </div>
+          <div className="flex-1 rounded-2xl bg-[#112C3E]/80 border border-white/10 shadow-xl min-w-0 flex flex-col">
+            <div className="flex-1 min-w-0 w-full overflow-x-auto overscroll-x-contain p-4 sm:p-6">
+              {CurrentView}
             </div>
           </div>
         </div>
@@ -377,7 +395,7 @@ function SidebarHeader({
   canTaller,
 }) {
   return (
-    <div className="p-5 border-b border-white/10">
+    <div className="p-5 border-b border-white/10 shrink-0">
       <div className="mb-4">
         <p className="text-xs text-white/60 leading-none">Mecánico App</p>
         <h1 className="text-base font-semibold">Panel</h1>
@@ -407,7 +425,7 @@ function AccessDenied({ location }) {
   return (
     <div className="rounded-xl border border-white/10 p-6 bg-white/5">
       <h3 className="text-lg font-semibold">Acceso restringido</h3>
-      <p className="text-sm text:white/70 mt-1">
+      <p className="text-sm text-white/70 mt-1">
         No tenés permisos para operar en <b>{label}</b>. Cambiá de sede o pedí
         acceso al admin.
       </p>
@@ -497,7 +515,7 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
         } ${value === id ? "bg-white/5" : ""}`}
       >
         <span
-          className={`h-8 w-8 rounded-lg ring-1 ring-white/10 bg-gradient-to-br ${grad} flex items-center justify-center`}
+          className={`h-8 w-8 rounded-lg ring-1 ring-white/10 bg-gradient-to-br ${grad} flex items-center justify-center shrink-0`}
         >
           <IconEl className="h-4 w-4" />
         </span>
@@ -510,9 +528,11 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
               </span>
             )}
           </div>
-          <p className="text-xs text-white/60">{desc}</p>
+          <p className="text-xs text-white/60 truncate">{desc}</p>
         </div>
-        {value === id ? <CheckIcon className="h-4 w-4 text-white/80" /> : null}
+        {value === id ? (
+          <CheckIcon className="h-4 w-4 text-white/80 shrink-0" />
+        ) : null}
       </button>
     </li>
   );
@@ -529,14 +549,9 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
         <span className="flex items-center gap-2">
           <Dot className={dotColor(value)} />
           <span className="font-medium">{label}</span>
-          {value === "taller" && (
-            <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-white/5 ring-1 ring-white/10">
-              Próximamente
-            </span>
-          )}
         </span>
         <ChevronDown
-          className={`h-4 w-4 ${open ? "rotate-180" : ""} transition`}
+          className={`h-4 w-4 ${open ? "rotate-180" : ""} transition shrink-0`}
         />
       </button>
 
@@ -564,8 +579,8 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
           <Option
             id="taller"
             allowed={!!hasTaller}
-            label="Taller"
-            desc="Gestión de OT. (en preparación)"
+            label="Taller Mecánico"
+            desc="Gestión de clientes y órdenes."
             grad="from-emerald-500/70 to-teal-500/70"
             icon={WrenchIcon}
           />
@@ -629,35 +644,6 @@ function ReportesView() {
   return <div className="space-y-4 min-w-0" />;
 }
 
-/* ───────── Placeholder Taller ───────── */
-function TallerPlaceholder() {
-  return (
-    <div className="rounded-xl border border-white/10 p-6 bg-white/5">
-      <div className="flex items-start gap-4">
-        <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-emerald-500/70 to-teal-500/70 flex items-center justify-center ring-1 ring-white/10">
-          <WrenchIcon className="h-6 w-6" />
-        </div>
-        <div className="min-w-0">
-          <h3 className="text-lg font-semibold">Módulo de Taller</h3>
-          <p className="text-sm text-white/70 mt-1">
-            Estamos preparando la gestión de órdenes de trabajo, repuestos, mano
-            de obra, estados y pagos. Mientras tanto, podés operar en PV1 y PV2.
-          </p>
-          <ul className="mt-3 text-sm text-white/70 list-disc ml-5 space-y-1">
-            <li>Multi-sede y multi-org (orgId, locationId).</li>
-            <li>Órdenes, repuestos, mano de obra y estados.</li>
-            <li>Pagos, adjuntos y notificaciones al cliente.</li>
-          </ul>
-          <div className="mt-4 inline-flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg bg-white/5 ring-1 ring-white/10">
-            <Dot className="bg-emerald-400" />
-            Próximamente
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ───────── Iconos & utils ───────── */
 function HomeIcon({ className = "" }) {
   return (
@@ -680,7 +666,6 @@ function CartIcon({ className = "" }) {
   );
 }
 function CashIcon({ className = "" }) {
-  // 💵 Icono caja / dinero
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none">
       <rect
@@ -823,9 +808,74 @@ function Dot({ className = "" }) {
   );
 }
 
+function UsersIcon({ className = "" }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
+      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 00-3-3.87" />
+      <path d="M16 3.13a4 4 0 010 7.75" />
+    </svg>
+  );
+}
+function FileTextIcon({ className = "" }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M16 13H8" />
+      <path d="M16 17H8" />
+      <path d="M10 9H8" />
+    </svg>
+  );
+}
+function ToolIcon({ className = "" }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    >
+      <path d="M10 2v7.31" />
+      <path d="M14 9.3V1.99" />
+      <path d="M8.5 2h7" />
+      <path d="M14 9.3a6.5 6.5 0 11-4 0" />
+      <path d="M5.52 16h12.96" />
+    </svg>
+  );
+}
+
 /* ───────── Utils ───────── */
 function titleFor(active, loc) {
-  if (loc === "taller") return "Taller";
+  if (loc === "taller") {
+    switch (active) {
+      case "clientes":
+        return "Gestión de Clientes";
+      case "trabajos":
+        return "Órdenes de Trabajo";
+      case "presupuestos":
+        return "Presupuestos";
+      case "mecanicos":
+        return "Panel de Mecánico";
+      default:
+        return "Resumen del Taller";
+    }
+  }
+
   switch (active) {
     case "ventas":
       return "Ventas";
@@ -845,9 +895,23 @@ function titleFor(active, loc) {
       return "Inicio";
   }
 }
+
 function subtitleFor(active, loc) {
-  if (loc === "taller")
-    return "Módulo en preparación — pronto vas a poder gestionar órdenes, repuestos y mano de obra.";
+  if (loc === "taller") {
+    switch (active) {
+      case "clientes":
+        return "Directorio de clientes, vehículos asociados y su historial.";
+      case "trabajos":
+        return "Asignación de tareas y control de estados de trabajos.";
+      case "presupuestos":
+        return "Armado de cotizaciones y envío directo por WhatsApp.";
+      case "mecanicos":
+        return "Vista exclusiva de trabajos asignados por mecánico.";
+      default:
+        return "Indicadores generales del taller.";
+    }
+  }
+
   switch (active) {
     case "ventas":
       return "Registrá ventas y cobros por sede.";
@@ -867,11 +931,14 @@ function subtitleFor(active, loc) {
       return "Resumen y accesos rápidos.";
   }
 }
+
 function dotColor(loc) {
   if (loc === "pv1") return "bg-[#EE7203]";
   if (loc === "pv2") return "bg-[#FF3816]";
   return "bg-emerald-400";
 }
-function defaultActiveFor(loc) {
-  return loc === "taller" ? "home" : "ventas";
+
+function defaultActiveFor(loc, isAdmin) {
+  if (loc === "taller" && !isAdmin) return "mecanicos";
+  return "home";
 }

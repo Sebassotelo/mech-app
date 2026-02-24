@@ -19,27 +19,39 @@ import {
 const PERMISOS_POR_DEFECTO = [1];
 const PERMISOS_SEMILLA = {
   "saabtian@gmail.com": [1, 2, 3, 4],
-  "agusmeza2812@gmail.com": [1, 2, 3, 4],
 };
 
 function Context(props) {
-  // Iniciamos el loader en true para que tape la pantalla desde el milisegundo cero
   const [loader, setLoader] = useState(true);
   const [user, setUser] = useState(null);
   const [user1, setUser1] = useState(null);
-  const [permisos, setPermisos] = useState([]); // array de números
+  const [permisos, setPermisos] = useState([]);
 
   const [categorias, setCategorias] = useState([]);
   const [productos, setProductos] = useState([]);
   const [ventas, setVentas] = useState([]);
   const [egresos, setEgresos] = useState([]);
+
+  // ✅ Presupuestos (los de antes) -> coleccion "presupuestos"
   const [presupuestos, setPresupuestos] = useState([]);
   const [presupuestosLoading, setPresupuestosLoading] = useState(false);
 
+  // ✅ NUEVO: Presupuestos Taller -> coleccion "presupuestosTaller"
+  const [presupuestosTaller, setPresupuestosTaller] = useState([]);
+  const [presupuestosTallerLoading, setPresupuestosTallerLoading] =
+    useState(false);
+
+  // ✅ NUEVOS ESTADOS TALLER
+  const [clientesTaller, setClientesTaller] = useState([]);
+  const [trabajosTaller, setTrabajosTaller] = useState([]);
+
   // ✅ Equivalencias (chunked)
-  const [equivalenciasDocs, setEquivalenciasDocs] = useState([]); // chunks crudos
-  const [equivalenciasMap, setEquivalenciasMap] = useState({}); // code -> obj
+  const [equivalenciasDocs, setEquivalenciasDocs] = useState([]);
+  const [equivalenciasMap, setEquivalenciasMap] = useState({});
   const [equivalenciasLoading, setEquivalenciasLoading] = useState(false);
+
+  // ✅ Estado de todos los usuarios
+  const [usuariosApp, setUsuariosApp] = useState([]);
 
   const auth = getAuth(firebaseApp);
   const firestore = getFirestore(firebaseApp);
@@ -189,7 +201,7 @@ function Context(props) {
         setUser(null);
         setUser1(null);
         setPermisos([]);
-        setLoader(false); // Si no hay usuario, apagamos el loader para mostrar la vista de login
+        setLoader(false);
       }
     });
 
@@ -210,7 +222,7 @@ function Context(props) {
   const unsubsRef = useRef([]);
 
   useEffect(() => {
-    if (!firestore || !user) return; // Solo suscribirse si hay usuario logueado
+    if (!firestore || !user) return;
 
     unsubsRef.current.forEach((u) => {
       try {
@@ -219,30 +231,47 @@ function Context(props) {
     });
     unsubsRef.current = [];
 
-    // --- SISTEMA DE CARGA SINCRONIZADA ---
     setLoader(true);
     setPresupuestosLoading(true);
+    setPresupuestosTallerLoading(true);
     setEquivalenciasLoading(true);
 
-    // Registramos las colecciones que necesitamos esperar
     const loadingState = {
       categorias: true,
       productos: true,
       equivalencias: true,
       ventas: true,
       presupuestos: true,
+      presupuestosTaller: true,
       caja: true,
+      clientes: true,
+      trabajos: true,
+      usuarios: true,
     };
 
     const checkGlobalLoader = () => {
-      // Si algún valor en loadingState sigue siendo true, significa que falta cargar algo
       const stillLoading = Object.values(loadingState).some(
         (state) => state === true,
       );
-      if (!stillLoading) {
-        setLoader(false); // Todo cargó, apagamos el loader global
-      }
+      if (!stillLoading) setLoader(false);
     };
+
+    // --- Usuarios ---
+    const unsubUsuarios = onSnapshot(
+      collection(firestore, "usuarios"),
+      (snap) => {
+        setUsuariosApp(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        loadingState.usuarios = false;
+        checkGlobalLoader();
+      },
+      (err) => {
+        console.error("RT usuarios:", err);
+        setUsuariosApp([]);
+        loadingState.usuarios = false;
+        checkGlobalLoader();
+      },
+    );
+    unsubsRef.current.push(unsubUsuarios);
 
     // --- Categorías ---
     const unsubCategorias = onSnapshot(
@@ -252,9 +281,7 @@ function Context(props) {
         loadingState.categorias = false;
         checkGlobalLoader();
       },
-      (err) => {
-        console.error("RT categorias:", err);
-        setCategorias([]);
+      () => {
         loadingState.categorias = false;
         checkGlobalLoader();
       },
@@ -269,22 +296,19 @@ function Context(props) {
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
-            if (k.startsWith("p_") && v) {
+            if (k.startsWith("p_") && v)
               prods.push({
                 id: v?.id || k.replace("p_", ""),
                 chunkDoc: v?.chunkDoc || d.id,
                 ...v,
               });
-            }
           }
         });
         setProductos(prods);
         loadingState.productos = false;
         checkGlobalLoader();
       },
-      (err) => {
-        console.error("RT productos:", err);
-        setProductos([]);
+      () => {
         loadingState.productos = false;
         checkGlobalLoader();
       },
@@ -297,17 +321,13 @@ function Context(props) {
       (snap) => {
         const chunks = [];
         const map = {};
-
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           chunks.push({ id: d.id, data });
-
           for (const [k, v] of Object.entries(data)) {
             if (!k.startsWith("e_") || !v) continue;
-
             const code = String(v.code || k.slice(2) || "").trim();
             if (!code) continue;
-
             map[code] = {
               ...v,
               code,
@@ -316,20 +336,13 @@ function Context(props) {
             };
           }
         });
-
         setEquivalenciasDocs(chunks);
         setEquivalenciasMap(map);
-
         setEquivalenciasLoading(false);
         loadingState.equivalencias = false;
         checkGlobalLoader();
       },
-      (err) => {
-        console.error("RT equivalencias:", err);
-        setEquivalenciasDocs([]);
-        setEquivalenciasMap({});
-
-        setEquivalenciasLoading(false);
+      () => {
         loadingState.equivalencias = false;
         checkGlobalLoader();
       },
@@ -344,36 +357,25 @@ function Context(props) {
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
-            if (k.startsWith("v_") && v) {
-              arr.push({
-                ...v,
-                id: v.id || k, // ID de la venta
-                _id: v.id || k, // Copia de seguridad
-                chunkDoc: d.id, // ID del documento contenedor (para eliminar)
-              });
-            }
+            if (k.startsWith("v_") && v)
+              arr.push({ ...v, id: v.id || k, _id: v.id || k, chunkDoc: d.id });
           }
         });
-        arr.sort((a, b) => {
-          const ta = a.createdAt?.seconds || 0;
-          const tb = b.createdAt?.seconds || 0;
-          return tb - ta;
-        });
-
+        arr.sort(
+          (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0),
+        );
         setVentas(arr);
         loadingState.ventas = false;
         checkGlobalLoader();
       },
-      (err) => {
-        console.error("RT ventas:", err);
-        setVentas([]);
+      () => {
         loadingState.ventas = false;
         checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubVentas);
 
-    // --- Presupuestos (chunked b_) ---
+    // ✅ Presupuestos (los de antes) (chunked b_) -> "presupuestos"
     const unsubPresupuestos = onSnapshot(
       collection(firestore, "presupuestos"),
       (snap) => {
@@ -381,54 +383,132 @@ function Context(props) {
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           for (const [k, v] of Object.entries(data)) {
-            if (k.startsWith("b_") && v) {
-              list.push({
-                ...v,
-                id: v.id || k,
-                chunkDoc: d.id,
-              });
-            }
+            if (k.startsWith("b_") && v)
+              list.push({ ...v, id: v.id || k, chunkDoc: d.id });
           }
         });
+        list.sort(
+          (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0),
+        );
         setPresupuestos(list);
-
         setPresupuestosLoading(false);
         loadingState.presupuestos = false;
         checkGlobalLoader();
       },
-      (err) => {
-        console.error("RT presupuestos:", err);
-        setPresupuestos([]);
-
-        setPresupuestosLoading(false);
+      () => {
         loadingState.presupuestos = false;
+        setPresupuestosLoading(false);
         checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubPresupuestos);
 
+    // ✅ NUEVO: Presupuestos Taller (chunked b_) -> "presupuestosTaller"
+    const unsubPresupuestosTaller = onSnapshot(
+      collection(firestore, "presupuestosTaller"),
+      (snap) => {
+        const list = [];
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (k.startsWith("b_") && v)
+              list.push({ ...v, id: v.id || k, chunkDoc: d.id });
+          }
+        });
+        list.sort(
+          (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0),
+        );
+        setPresupuestosTaller(list);
+        setPresupuestosTallerLoading(false);
+        loadingState.presupuestosTaller = false;
+        checkGlobalLoader();
+      },
+      () => {
+        loadingState.presupuestosTaller = false;
+        setPresupuestosTallerLoading(false);
+        checkGlobalLoader();
+      },
+    );
+    unsubsRef.current.push(unsubPresupuestosTaller);
+
     // --- Caja (egresos / movimientos de caja) ---
     const unsubCaja = onSnapshot(
       collection(firestore, "caja"),
       (snap) => {
-        const list = snap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-        setEgresos(list);
-
+        setEgresos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         loadingState.caja = false;
         checkGlobalLoader();
       },
-      (err) => {
-        console.error("RT caja:", err);
-        setEgresos([]);
-
+      () => {
         loadingState.caja = false;
         checkGlobalLoader();
       },
     );
     unsubsRef.current.push(unsubCaja);
+
+    // ✅ NUEVO: RT Clientes Taller (chunked c_)
+    const unsubClientes = onSnapshot(
+      collection(firestore, "clientesTaller"),
+      (snap) => {
+        const arr = [];
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (k.startsWith("c_") && v) {
+              arr.push({
+                ...v,
+                id: v.id || k.replace("c_", ""),
+                chunkDoc: d.id,
+              });
+            }
+          }
+        });
+        arr.sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+        setClientesTaller(arr);
+        loadingState.clientes = false;
+        checkGlobalLoader();
+      },
+      (err) => {
+        console.error("RT clientes:", err);
+        setClientesTaller([]);
+        loadingState.clientes = false;
+        checkGlobalLoader();
+      },
+    );
+    unsubsRef.current.push(unsubClientes);
+
+    // ✅ NUEVO: RT Trabajos Taller (chunked t_)
+    const unsubTrabajos = onSnapshot(
+      collection(firestore, "trabajosTaller"),
+      (snap) => {
+        const arr = [];
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          for (const [k, v] of Object.entries(data)) {
+            if (k.startsWith("t_") && v) {
+              arr.push({
+                ...v,
+                id: v.id || k.replace("t_", ""),
+                chunkDoc: d.id,
+              });
+            }
+          }
+        });
+        arr.sort(
+          (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0),
+        );
+        setTrabajosTaller(arr);
+        loadingState.trabajos = false;
+        checkGlobalLoader();
+      },
+      (err) => {
+        console.error("RT trabajos:", err);
+        setTrabajosTaller([]);
+        loadingState.trabajos = false;
+        checkGlobalLoader();
+      },
+    );
+    unsubsRef.current.push(unsubTrabajos);
 
     return () => {
       unsubsRef.current.forEach((u) => {
@@ -438,11 +518,8 @@ function Context(props) {
       });
       unsubsRef.current = [];
     };
-  }, [firestore, user]); // Añadido `user` a las dependencias para que dispare las subscripciones al loguearse
+  }, [firestore, user]);
 
-  // ==========================
-  // Provider
-  // ==========================
   return (
     <ContextGeneral.Provider
       value={{
@@ -453,29 +530,37 @@ function Context(props) {
         permisos,
         loader,
         setLoader,
-
         categorias,
         productos,
         ventas,
         egresos,
+
+        // ✅ Presupuestos (antes)
         presupuestos,
         presupuestosLoading,
 
-        // ✅ Equivalencias
+        // ✅ NUEVO: Presupuestos Taller
+        presupuestosTaller,
+        presupuestosTallerLoading,
+
         equivalenciasDocs,
         equivalenciasMap,
         equivalenciasLoading,
+        usuariosApp,
         getEquivalenceGroupsForProduct,
         getEquivalentProductsByCode,
-
-        // setters
+        clientesTaller,
+        trabajosTaller,
         setCategorias,
         setProductos,
         setVentas,
         setEgresos,
         setUser,
         setPermisos,
+
+        // ✅ setters
         setPresupuestos,
+        setPresupuestosTaller,
       }}
     >
       {props.children}
