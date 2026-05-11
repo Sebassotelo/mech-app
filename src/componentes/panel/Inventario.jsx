@@ -4,6 +4,7 @@
 import React, { useContext, useMemo, useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import ContextGeneral from "@/servicios/contextGeneral";
+import useDismissibleModal from "@/hooks/useDismissibleModal";
 import {
   doc,
   setDoc,
@@ -135,15 +136,26 @@ export default function Inventario() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blankProduct());
 
-  // ref del modal para click afuera
-  const modalRef = useRef(null);
-
   // refs de inputs
   const skuInputRef = useRef(null);
 
   // Estados para modales secundarios (definidos aquí para usarlos en hooks)
   const [eqPickerOpen, setEqPickerOpen] = useState(false);
   const [openEqList, setOpenEqList] = useState(false);
+  const {
+    modalRef,
+    handleBackdropMouseDown: handleProductModalBackdrop,
+  } = useDismissibleModal(open, () => {
+    if (!eqPickerOpen) setOpen(false);
+  });
+  const {
+    modalRef: eqListModalRef,
+    handleBackdropMouseDown: handleEqListBackdrop,
+  } = useDismissibleModal(openEqList, () => setOpenEqList(false));
+  const {
+    modalRef: eqPickerModalRef,
+    handleBackdropMouseDown: handleEqPickerBackdrop,
+  } = useDismissibleModal(eqPickerOpen, closePicker);
 
   // ===== Scanner de código de barras =====
   const scanBufferRef = useRef("");
@@ -1761,7 +1773,7 @@ export default function Inventario() {
 
       {/* Loader/Progreso de import */}
       {isAdmin4 && imp.running && (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm">
+        <div className="rounded-xl border border-slate-700 bg-[#0E2330] p-3 text-sm">
           <div className="flex items-center justify-between mb-2">
             <div className="font-medium">Importando: {imp.filename}</div>
             <div className="text-white/70">
@@ -1799,7 +1811,7 @@ export default function Inventario() {
           pageItems.map((p) => (
             <article
               key={`${p.chunkDoc}_${p.id}`}
-              className="rounded-xl border border-white/10 bg-white/5 p-3"
+              className="rounded-xl border border-slate-700 bg-[#0E2330] p-3"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex items-start gap-2">
@@ -1870,7 +1882,7 @@ export default function Inventario() {
       </div>
 
       {/* ====== TABLA (md+) ====== */}
-      <div className="hidden md:block rounded-xl border border-white/10">
+      <div className="hidden md:block rounded-xl border border-slate-700 bg-[#0E2330]">
         <div
           ref={tableScrollRef}
           className="max-w-full overflow-x-auto overscroll-x-contain select-none cursor-grab active:cursor-grabbing"
@@ -1882,7 +1894,7 @@ export default function Inventario() {
           title="Arrastrá para desplazar horizontalmente"
         >
           <table className="w-full text-sm table-fixed">
-            <thead className="bg-white/5 text-white/70">
+            <thead className="bg-[#0A1B25] text-white/70">
               <tr>
                 {cols.nombre && (
                   <Th className="w-[220px] lg:w-[280px] sticky left-0 z-20">
@@ -2161,13 +2173,11 @@ export default function Inventario() {
       {isAdmin4 && openEqList && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setOpenEqList(false);
-          }}
+          onMouseDown={handleEqListBackdrop}
         >
           <div
+            ref={eqListModalRef}
             className="w-full max-w-4xl rounded-xl bg-[#0E2533] border border-white/10 shadow-2xl flex flex-col max-h-[90vh]"
-            onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="p-4 border-b border-white/10 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2281,22 +2291,14 @@ export default function Inventario() {
       {isAdmin4 && open && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-          onMouseDown={(e) => {
-            if (modalRef.current && !modalRef.current.contains(e.target)) {
-              // Solo cerrar si el picker NO está abierto, para evitar cierres accidentales
-              if (!eqPickerOpen) {
-                setOpen(false);
-              }
-            }
-          }}
+          onMouseDown={handleProductModalBackdrop}
         >
           <div
             ref={modalRef}
-            onMouseDown={(e) => e.stopPropagation()}
             className="w-full max-w-3xl rounded-xl bg-[#112C3E] border border-white/10 shadow-2xl max-h-[85vh] overflow-y-auto"
             role="dialog"
           >
-            <div className="p-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#112C3E]/95 backdrop-blur">
+            <div className="p-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#112C3E]">
               <h3 className="font-semibold text-base">
                 {editing ? "Editar producto" : "Nuevo producto"}
               </h3>
@@ -2724,13 +2726,11 @@ export default function Inventario() {
       {eqPickerOpen && (
         <div
           className="fixed inset-0 z-[60] bg-black/60 grid place-items-center p-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closePicker();
-          }}
+          onMouseDown={handleEqPickerBackdrop}
         >
           <div
+            ref={eqPickerModalRef}
             className="w-full max-w-2xl rounded-xl border border-white/10 bg-[#112C3E] shadow-2xl overflow-hidden"
-            onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="p-3 border-b border-white/10 flex items-center justify-between">
               <div className="min-w-0">
@@ -2898,7 +2898,7 @@ function Th({ children, className = "" }) {
       className={[
         "px-2 py-2 text-left",
         isSticky
-          ? "bg-white/5 backdrop-blur supports-[backdrop-filter]:bg-white/5"
+          ? "bg-white/5"
           : "",
         className,
       ]

@@ -3,6 +3,7 @@
 
 import React, { useMemo, useState, useContext } from "react";
 import ContextGeneral from "@/servicios/contextGeneral";
+import useDismissibleModal from "@/hooks/useDismissibleModal";
 import { toast } from "sonner";
 import {
   doc,
@@ -47,6 +48,8 @@ export default function HistorialVentas({ location = "pv1" }) {
       const total = Number(v?.totals?.total ?? v?.total ?? 0);
       if (isCanceled(v)) {
         anuladas += 1;
+      } else if (!isSettledSale(v)) {
+        return;
       } else {
         monto += total;
         tickets += 1;
@@ -261,7 +264,7 @@ export default function HistorialVentas({ location = "pv1" }) {
       </div>
 
       {/* Tabla (solo md+) */}
-      <div className="hidden md:block overflow-hidden rounded-2xl border border-white/10">
+      <div className="hidden md:block overflow-hidden rounded-2xl border border-slate-700 bg-[#0E2330]">
         <div className="max-h-[70vh] overflow-auto">
           <table className="w-full text-sm table-fixed">
             <colgroup>
@@ -275,7 +278,7 @@ export default function HistorialVentas({ location = "pv1" }) {
               <col />
             </colgroup>
 
-            <thead className="bg-white/5 text-white/70 sticky top-0 z-10 backdrop-blur-sm">
+            <thead className="bg-[#0A1B25] text-white/70 sticky top-0 z-10">
               <tr>
                 <SortableTh
                   label="Fecha"
@@ -360,15 +363,16 @@ export default function HistorialVentas({ location = "pv1" }) {
                   const total = Number(
                     v?.totals?.total ?? v?.total ?? subtotal + surcharge,
                   );
-                  const method = v?.payment?.method || "—";
+                  const method = getVentaPaymentSnapshot(v).method || v?.payment?.method || "—";
                   const createdMs = getCreatedMs(v);
                   const canceled = isCanceled(v);
+                  const paymentMeta = getVentaPaymentMeta(v);
                   const idToShow = v.id || v._id || "—";
 
                   return (
                     <tr
                       key={`${v.chunkDoc || "x"}_${v.id || v._id}`}
-                      className="border-t border-white/5 hover:bg-white/5 cursor-pointer transition-colors"
+                      className="border-t border-slate-800 hover:bg-[#132836] cursor-pointer transition-colors"
                       onClick={() => setSel(v)}
                       title={`ID: ${idToShow}`}
                     >
@@ -396,6 +400,11 @@ export default function HistorialVentas({ location = "pv1" }) {
                       </Td>
                       <Td className="whitespace-nowrap">
                         <Badge>{labelMethod(method)}</Badge>
+                        {paymentMeta.showBadge && (
+                          <span className={`ml-2 ${paymentMeta.badgeClass}`}>
+                            {paymentMeta.badgeLabel}
+                          </span>
+                        )}
                         {canceled && (
                           <span className="ml-2 px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FF3816] text-[10px] uppercase font-bold tracking-wide">
                             ANULADA
@@ -440,15 +449,16 @@ export default function HistorialVentas({ location = "pv1" }) {
             const total = Number(
               v?.totals?.total ?? v?.total ?? subtotal + surcharge,
             );
-            const method = v?.payment?.method || "—";
+            const method = getVentaPaymentSnapshot(v).method || v?.payment?.method || "—";
             const createdMs = getCreatedMs(v);
             const canceled = isCanceled(v);
+            const paymentMeta = getVentaPaymentMeta(v);
 
             return (
               <button
                 key={`${v.chunkDoc || "x"}_${v.id || v._id}`}
                 onClick={() => setSel(v)}
-                className="w-full text-left rounded-2xl border border-white/10 bg-white/5 active:bg-white/10 p-4 transition-colors"
+                className="w-full text-left rounded-2xl border border-slate-700 bg-[#132836] active:bg-[#193445] p-4 transition-colors"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -470,6 +480,11 @@ export default function HistorialVentas({ location = "pv1" }) {
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Badge>{labelMethod(method)}</Badge>
+                      {paymentMeta.showBadge && (
+                        <span className={paymentMeta.badgeClass}>
+                          {paymentMeta.badgeLabel}
+                        </span>
+                      )}
                       {typeof surcharge === "number" && surcharge > 0 && (
                         <Badge>Recargo {money(surcharge)}</Badge>
                       )}
@@ -510,6 +525,7 @@ export default function HistorialVentas({ location = "pv1" }) {
 function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
   const ctx = useContext(ContextGeneral);
   const firestore = ctx?.firestore;
+  useDismissibleModal(!!venta, onClose);
 
   // Normalización de claves (importante por si cambia la estructura)
   const fieldKey = venta?.id || venta?._id;
@@ -530,7 +546,12 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
   const provider = venta?.payment?.provider || "manual";
   const s = venta?.payment?.surcharge || {};
   const hasSurcharge = !!s?.applied || surcharge > 0;
+  const paymentSnapshot = getVentaPaymentSnapshot(venta);
+  const paymentMeta = getVentaPaymentMeta(venta);
   const canceled = isCanceled(venta);
+  const paymentUpdatedMs = tsToMs(paymentSnapshot.updatedAt);
+  const displayMethod = paymentSnapshot.method || method || "—";
+  const displayProvider = paymentSnapshot.provider || provider || "manual";
 
   // --- LOGICA DE ANULACIÓN (Soft Delete) ---
   async function handleDeleteVenta() {
@@ -624,7 +645,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Overlay Backdrop */}
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
+        className="absolute inset-0 bg-black/70 transition-opacity"
         onClick={onClose}
       />
 
@@ -664,7 +685,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
               <span className="text-xs text-white/50 uppercase tracking-wide">
                 Método
               </span>
-              <span className="text-sm font-medium">{labelMethod(method)}</span>
+              <span className="text-sm font-medium">{labelMethod(displayMethod)}</span>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10">
               <span className="text-xs text-white/50 uppercase tracking-wide">
@@ -674,6 +695,13 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
                 {venta?.status || "ok"}
               </span>
             </div>
+            {paymentMeta.showBadge && (
+              <div
+                className={`px-3 py-1.5 rounded-lg border text-sm font-medium ${paymentMeta.pillClass}`}
+              >
+                {paymentMeta.badgeLabel}
+              </div>
+            )}
             {canceled && (
               <div className="px-3 py-1.5 rounded-lg bg-[#FF3816]/20 border border-[#FF3816]/30 text-[#FF3816] text-sm font-bold tracking-wide animate-pulse">
                 ANULADA / VOIDED
@@ -687,9 +715,9 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
               <h4 className="text-sm font-medium text-white/70 uppercase tracking-wider">
                 Detalle de Productos
               </h4>
-              <div className="rounded-2xl border border-white/10 overflow-hidden bg-white/[0.02]">
+              <div className="rounded-2xl border border-slate-700 overflow-hidden bg-[#0E2330]">
                 <table className="w-full text-sm">
-                  <thead className="bg-white/5 text-white/70">
+                  <thead className="bg-[#0A1B25] text-white/70">
                     <tr>
                       <Th>SKU</Th>
                       <Th>Producto</Th>
@@ -725,7 +753,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
             {/* Columna Derecha: Totales y Datos */}
             <div className="space-y-6">
               {/* Totales Card */}
-              <div className="rounded-2xl bg-white/[0.03] border border-white/10 p-5 space-y-3">
+              <div className="rounded-2xl bg-[#0E2330] border border-slate-700 p-5 space-y-3">
                 <KV label="Subtotal" value={money(subtotal)} />
                 {hasSurcharge && (
                   <div className="flex justify-between text-sm text-[#EE7203]">
@@ -750,6 +778,38 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
                 </h4>
                 <div className="space-y-2">
                   <div className="flex flex-col">
+                    <span className="text-xs text-white/40">Proveedor</span>
+                    <span className="text-white/80 capitalize">
+                      {displayProvider === "mercadopago" ? "Mercado Pago" : "Manual"}
+                    </span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs text-white/40">Estado del cobro</span>
+                    <span className="text-white/80">{paymentMeta.detailLabel}</span>
+                  </div>
+                  {displayProvider === "mercadopago" && (
+                    <>
+                      <div className="flex flex-col">
+                        <span className="text-xs text-white/40">Order ID</span>
+                        <span className="font-mono text-white/80 select-all break-all">
+                          {paymentSnapshot.orderId || "—"}
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-xs text-white/40">Payment ID</span>
+                        <span className="font-mono text-white/80 select-all break-all">
+                          {paymentSnapshot.paymentId || "—"}
+                        </span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-xs text-white/40">Último cambio MP</span>
+                        <span className="text-white/80">
+                          {paymentUpdatedMs ? fmtDate(paymentUpdatedMs) : "—"}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  <div className="flex flex-col">
                     <span className="text-xs text-white/40">ID Venta</span>
                     <span className="font-mono text-white/80 select-all">
                       {fieldKey}
@@ -768,7 +828,7 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
                   <div className="flex flex-col">
                     <span className="text-xs text-white/40">Vendedor</span>
                     <span className="text-white/80">
-                      {venta?.createdByEmail}
+                      {venta?.createdByEmail || "—"}
                     </span>
                   </div>
                   <div className="flex flex-col">
@@ -930,6 +990,137 @@ function isCanceled(v) {
     v?.anulada === true ||
     v?.void === true
   );
+}
+function getLatestPaymentEntry(v) {
+  const payments = Array.isArray(v?.payments) ? v.payments : [];
+  return payments.length > 0 ? payments[payments.length - 1] : null;
+}
+function getVentaPaymentSnapshot(v) {
+  const latest = getLatestPaymentEntry(v);
+  return {
+    provider: String(
+      latest?.provider || v?.payment?.provider || "manual",
+    ).toLowerCase(),
+    method: latest?.method || v?.payment?.method || "",
+    status: String(latest?.status || v?.payment?.status || "").toLowerCase(),
+    orderId: latest?.orderId || v?.payment?.orderId || "",
+    paymentId: latest?.paymentId || v?.payment?.paymentId || "",
+    updatedAt:
+      latest?.updatedAt || v?.payment?.updatedAt || v?.updatedAt || null,
+  };
+}
+function getVentaPaymentMeta(v) {
+  const snapshot = getVentaPaymentSnapshot(v);
+  const saleStatus = String(v?.status || v?.estado || "").toLowerCase();
+
+  if (isCanceled(v)) {
+    return {
+      showBadge: false,
+      badgeLabel: "Anulada",
+      detailLabel: "Venta anulada manualmente",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FFB0A1] text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-[#FF3816]/30 bg-[#FF3816]/10 text-[#FFB0A1]",
+    };
+  }
+  if (snapshot.provider !== "mercadopago") {
+    return {
+      showBadge: false,
+      badgeLabel: "",
+      detailLabel: "Cobro manual registrado",
+      badgeClass: "",
+      pillClass: "",
+    };
+  }
+  if (snapshot.status === "approved" || saleStatus === "paid") {
+    return {
+      showBadge: true,
+      badgeLabel: "Aprobado",
+      detailLabel: "Cobro aprobado por Mercado Pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-emerald-400/30 bg-emerald-500/15 text-emerald-100",
+    };
+  }
+  if (snapshot.status === "pending" || saleStatus === "payment_pending") {
+    return {
+      showBadge: true,
+      badgeLabel: "Pendiente",
+      detailLabel: "Esperando confirmación de Mercado Pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-sky-500/15 text-sky-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-sky-400/30 bg-sky-500/15 text-sky-100",
+    };
+  }
+  if (snapshot.status === "preparing" || saleStatus === "payment_preparing") {
+    return {
+      showBadge: true,
+      badgeLabel: "Preparando",
+      detailLabel: "Cobro creado, pendiente de vincular con el QR",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-indigo-400/30 bg-indigo-500/15 text-indigo-100",
+    };
+  }
+  if (snapshot.status === "canceled" || saleStatus === "payment_canceled") {
+    return {
+      showBadge: true,
+      badgeLabel: "Cancelado",
+      detailLabel: "Cobro cancelado en Mercado Pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-orange-500/15 text-orange-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-orange-400/30 bg-orange-500/15 text-orange-100",
+    };
+  }
+  if (snapshot.status === "expired" || saleStatus === "payment_expired") {
+    return {
+      showBadge: true,
+      badgeLabel: "Vencido",
+      detailLabel: "La orden venció sin pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-amber-500/15 text-amber-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-amber-400/30 bg-amber-500/15 text-amber-100",
+    };
+  }
+  if (snapshot.status === "rejected" || saleStatus === "payment_rejected") {
+    return {
+      showBadge: true,
+      badgeLabel: "Rechazado",
+      detailLabel: "Mercado Pago rechazó el cobro",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-rose-500/15 text-rose-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-rose-400/30 bg-rose-500/15 text-rose-100",
+    };
+  }
+  if (snapshot.status === "error" || saleStatus === "payment_error") {
+    return {
+      showBadge: true,
+      badgeLabel: "Error",
+      detailLabel: "La orden no terminó de cargarse correctamente",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-red-500/15 text-red-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-red-400/30 bg-red-500/15 text-red-100",
+    };
+  }
+  return {
+    showBadge: true,
+    badgeLabel: "Sin estado",
+    detailLabel: "Venta sin confirmación final de cobro",
+    badgeClass:
+      "px-2 py-0.5 rounded bg-white/10 text-white/70 text-[10px] uppercase font-bold tracking-wide",
+    pillClass: "border-white/15 bg-white/5 text-white/80",
+  };
+}
+function isSettledSale(v) {
+  if (isCanceled(v)) return false;
+
+  const snapshot = getVentaPaymentSnapshot(v);
+  const provider = snapshot.provider;
+  if (provider !== "mercadopago") return true;
+
+  const paymentStatus = snapshot.status;
+  const saleStatus = String(v?.status || "").toLowerCase();
+  return paymentStatus === "approved" || saleStatus === "paid";
 }
 function sortLabel(key) {
   if (key === "fecha") return "Fecha";

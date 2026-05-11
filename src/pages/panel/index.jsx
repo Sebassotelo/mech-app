@@ -7,40 +7,41 @@ import ContextGeneral from "@/servicios/contextGeneral";
 import { toast } from "sonner";
 import HomeOverview from "@/componentes/panel/HomeOverview";
 import Stock from "@/componentes/panel/Stock";
-import Cuentas from "@/componentes/panel/Cuentas"; // ✅ solo admin(4)
-import Caja from "@/componentes/panel/Caja"; // ✅ NUEVO
+import Cuentas from "@/componentes/panel/Cuentas"; // solo admin(4)
+import Caja from "@/componentes/panel/Caja"; // caja
 import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/router";
-// Asumo que importaste tu componente Loader, ajústalo según tu ruta:
+// Loader del proyecto
 import Loader from "@/componentes/Loader";
 
-// ✅ NUEVO: Importes de Taller (Asegurate de tener estos archivos en @/componentes/taller)
+// Importes de Taller
 import HomeTaller from "@/componentes/taller/HomeTaller";
 import ClientesTaller from "@/componentes/taller/ClientesTaller";
 import TrabajosTaller from "@/componentes/taller/TrabajosTaller";
 import PresupuestosTaller from "@/componentes/taller/PresupuestosTaller";
 import MecanicosTaller from "@/componentes/taller/MecanicosTaller";
+import HelpHint from "@/componentes/HelpHint";
 
 export default function Dashboard() {
   const ctx = useContext(ContextGeneral);
   const router = useRouter();
 
-  // ───────── Auth Guard
+  // Auth guard
   const [authReady, setAuthReady] = useState(false);
 
   // Estado UI
   const [location, setLocation] = useState("pv1"); // pv1 | pv2 | taller
-  const [active, setActive] = useState("home"); // home | ventas | inventario | stock | historial | cuentas | reportes | caja | clientes | trabajos | presupuestos | mecanicos
+  const [active, setActive] = useState("home"); // home | ventas | presupuestosTallerPv | inventario | stock | historial | cuentas | reportes | caja | clientes | trabajos | presupuestos | mecanicos
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // ───────── Permisos
+  // Permisos
   const permisos = Array.isArray(ctx?.permisos) ? ctx.permisos : [];
   const hasPV1 = permisos.includes(1);
   const hasPV2 = permisos.includes(2);
   const hasTaller = permisos.includes(3);
   const isAdmin4 = permisos.includes(4);
 
-  // 👉 Para el admin, consideramos que tiene acceso a todas las sedes
+  // El admin tiene acceso a todas las sedes
   const canPV1 = hasPV1 || isAdmin4;
   const canPV2 = hasPV2 || isAdmin4;
   const canTaller = hasTaller || isAdmin4;
@@ -58,7 +59,7 @@ export default function Dashboard() {
     return null;
   }, [canPV1, canPV2, canTaller]);
 
-  // ───────── Auth effect
+  // Auth effect
   useEffect(() => {
     if (!ctx?.auth) return;
     const unsub = onAuthStateChanged(ctx.auth, (u) => {
@@ -68,7 +69,7 @@ export default function Dashboard() {
     return () => unsub();
   }, [ctx?.auth, router]);
 
-  // ───────── Persistencia UI (respetando permisos)
+  // Persistencia UI (respetando permisos)
   useEffect(() => {
     try {
       const a = localStorage.getItem("mx.active");
@@ -100,7 +101,7 @@ export default function Dashboard() {
     } catch {}
   }, [location]);
 
-  // ───────── Nav dinámico
+  // Nav dinamico
   const navItems = useMemo(() => {
     const base = [];
 
@@ -114,7 +115,7 @@ export default function Dashboard() {
     }
 
     if (location === "taller") {
-      // ✅ Si es Admin (4), ve todo el Taller (Pero no 'Cuentas')
+      // Si es Admin (4), ve todo el Taller (pero no Cuentas)
       if (isAdmin4) {
         base.push(
           { id: "home", label: "Resumen", icon: HomeIcon },
@@ -124,14 +125,23 @@ export default function Dashboard() {
           { id: "mecanicos", label: "Mecánicos", icon: ToolIcon },
         );
       } else {
-        // ✅ Si es Mecánico (3) y no Admin, ve SOLO su panel
+        // Si es Mecanico (3) y no Admin, ve solo su panel
         base.push({ id: "mecanicos", label: "Mis Trabajos", icon: ToolIcon });
       }
     } else {
-      // ✅ Vistas PV1 y PV2
+      // Vistas PV1 y PV2
       base.push(
         { id: "home", label: "Inicio", icon: HomeIcon },
         { id: "ventas", label: "Ventas", icon: CartIcon },
+        ...(canTaller
+          ? [
+              {
+                id: "presupuestosTallerPv",
+                label: "Presup. Taller",
+                icon: FileTextIcon,
+              },
+            ]
+          : []),
         { id: "caja", label: "Caja", icon: CashIcon },
         { id: "inventario", label: "Inventario", icon: BoxIcon },
         { id: "stock", label: "Stock", icon: StockIcon },
@@ -145,7 +155,7 @@ export default function Dashboard() {
     return base;
   }, [location, isAdmin4, permisos]);
 
-  // Si cambia permisos o sede y la vista actual ya no es válida, reacomodo
+  // Si cambia permisos o sede y la vista actual ya no es valida, reacomodo
   useEffect(() => {
     const validIds = new Set(navItems.map((n) => n.id));
     if (!validIds.has(active)) setActive(defaultActiveFor(location, isAdmin4));
@@ -157,7 +167,7 @@ export default function Dashboard() {
   const CurrentView = useMemo(() => {
     if (blockedByPerm && !isAdmin4) return <AccessDenied location={location} />;
 
-    // ✅ TALLER
+    // Taller
     if (location === "taller") {
       if (active === "clientes" && isAdmin4) return <ClientesTaller />;
       if (active === "trabajos" && isAdmin4) return <TrabajosTaller />;
@@ -169,8 +179,12 @@ export default function Dashboard() {
       return <MecanicosTaller />;
     }
 
-    // ✅ PV1 / PV2
+    // PV1 / PV2
     if (active === "ventas") return <VentasView location={location} />;
+    if (active === "presupuestosTallerPv")
+      return (
+        <PresupuestosTallerView location={location} embeddedFrom="pv" />
+      );
     if (active === "caja") return <CajaView location={location} />;
     if (active === "inventario") return <InventarioView location={location} />;
     if (active === "stock") return <StockView location={location} />;
@@ -180,7 +194,7 @@ export default function Dashboard() {
     return <HomeView location={location} />;
   }, [active, location, blockedByPerm, isAdmin4]);
 
-  // ───────── Mobile: bloquear scroll + cerrar con ESC
+  // Mobile: bloquear scroll y cerrar con ESC
   const drawerRef = useRef(null);
   useEffect(() => {
     if (mobileNavOpen) {
@@ -199,7 +213,7 @@ export default function Dashboard() {
   }, [mobileNavOpen]);
 
   const handleLocationChange = (loc) => {
-    // 👉 Admin puede cambiar a cualquier sede
+    // Admin puede cambiar a cualquier sede
     if (!isAdmin4) {
       if (
         !(
@@ -224,12 +238,14 @@ export default function Dashboard() {
     setMobileNavOpen(false);
   };
 
-  // ───────── Gates visuales ─────────
+  // Gates visuales
 
   // 1. Esperamos a que Firebase Auth responda
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-[#0C212D] text-white">
+      <div className="relative min-h-screen overflow-hidden bg-[#081821] text-white">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(0,166,80,0.18),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(238,114,3,0.22),_transparent_34%),radial-gradient(circle_at_bottom,_rgba(0,158,227,0.16),_transparent_38%)]" />
+        <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(255,255,255,0.85)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.85)_1px,transparent_1px)] [background-size:36px_36px]" />
         <Loader fullScreen={true} text="Verificando sesión..." />
       </div>
     );
@@ -238,28 +254,45 @@ export default function Dashboard() {
   // 2. Si no hay usuario, retornamos null (el useEffect superior redirige a "/")
   if (!ctx?.user) return null;
 
-  // 3. Esperamos a que el Context descargue todas las colecciones iniciales
+  // 3. Usuario desactivado desde la app
+  if (ctx?.userActivo === false) {
+    return <AccountInactive />;
+  }
+
+  // 4. Esperamos a que el Context descargue todas las colecciones iniciales
   if (ctx?.loader) {
     return (
-      <div className="min-h-screen bg-[#0C212D] text-white">
+      <div className="relative min-h-screen overflow-hidden bg-[#081821] text-white">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(0,166,80,0.18),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(238,114,3,0.22),_transparent_34%),radial-gradient(circle_at_bottom,_rgba(0,158,227,0.16),_transparent_38%)]" />
+        <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(255,255,255,0.85)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.85)_1px,transparent_1px)] [background-size:36px_36px]" />
         <Loader fullScreen={true} text="Cargando sistema..." />
       </div>
     );
   }
 
-  // ───────── UI principal
+  // UI principal
   return (
-    <div className="min-h-screen flex bg-[#0C212D] text-white overflow-x-hidden">
+    <div className="relative min-h-screen overflow-x-hidden bg-[#081821] text-white">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(0,166,80,0.16),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(238,114,3,0.2),_transparent_34%),radial-gradient(circle_at_bottom,_rgba(0,158,227,0.14),_transparent_38%)]" />
+      <div className="pointer-events-none absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(255,255,255,0.85)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.85)_1px,transparent_1px)] [background-size:36px_36px]" />
+      <div className="relative z-10 min-h-screen flex overflow-x-hidden">
       {/* Sidebar desktop */}
-      <aside className="hidden md:flex w-72 xl:w-80 bg-[#112C3E]/90 backdrop-blur-md border-r border-white/10 flex-col">
+      <aside className="hidden md:flex w-72 xl:w-80 border-r border-white/10 bg-[#0E2330] shadow-[0_18px_50px_rgba(0,0,0,0.28)] flex-col">
         <SidebarHeader
           location={location}
           onChangeLocation={handleLocationChange}
           canPV1={canPV1}
           canPV2={canPV2}
           canTaller={canTaller}
+          isAdmin4={isAdmin4}
         />
-        <NavList navItems={navItems} active={active} onClickItem={setActive} />
+        <NavList
+          navItems={navItems}
+          active={active}
+          onClickItem={setActive}
+          location={location}
+          isAdmin4={isAdmin4}
+        />
         <div className="p-4 border-t border-white/10 text-xs text-white/50 mt-auto">
           © {new Date().getFullYear()} Mecánico App
         </div>
@@ -268,14 +301,14 @@ export default function Dashboard() {
       {/* Drawer mobile */}
       {mobileNavOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className="fixed inset-0 z-40 bg-black/70 md:hidden"
           onMouseDown={() => setMobileNavOpen(false)}
           aria-hidden="true"
         />
       )}
       <div
         ref={drawerRef}
-        className={`fixed z-50 inset-y-0 left-0 w-72 bg-[#112C3E] border-r border-white/10 md:hidden transition-transform duration-200 flex flex-col ${
+          className={`fixed z-50 inset-y-0 left-0 w-72 border-r border-white/10 bg-[#0E2330] shadow-[0_18px_60px_rgba(0,0,0,0.45)] md:hidden transition-transform duration-200 flex flex-col ${
           mobileNavOpen ? "translate-x-0" : "-translate-x-full"
         }`}
         onMouseDown={(e) => e.stopPropagation()}
@@ -291,9 +324,12 @@ export default function Dashboard() {
         </div>
 
         <div className="p-4 border-b border-white/10 shrink-0">
-          <p className="text-[11px] uppercase tracking-widest text-white/50 mb-2">
-            Seleccioná la sede
-          </p>
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-[11px] uppercase tracking-widest text-white/50">
+              Seleccioná la sede
+            </p>
+            <HelpHint {...locationHelpContent(isAdmin4)} />
+          </div>
           <LocationDropdown
             value={location}
             onChange={handleLocationChange}
@@ -308,6 +344,8 @@ export default function Dashboard() {
             navItems={navItems}
             active={active}
             onClickItem={handleNavClick}
+            location={location}
+            isAdmin4={isAdmin4}
           />
         </nav>
 
@@ -319,24 +357,30 @@ export default function Dashboard() {
       {/* Contenido */}
       <main className="flex-1 min-w-0 overflow-x-hidden flex flex-col">
         {/* Topbar mobile */}
-        <div className="md:hidden sticky top-0 z-30 bg-[#0C212D]/95 backdrop-blur border-b border-white/10 shrink-0">
+        <div className="md:hidden sticky top-0 z-30 border-b border-white/10 bg-[#0E2330] shrink-0">
           <div className="mx-auto w-full max-w-screen-xl px-4 py-3 flex items-center justify-between">
             <button
               onClick={() => setMobileNavOpen(true)}
-              className="p-2 rounded-lg hover:bg-white/10"
+              className="rounded-xl border border-white/10 bg-[#0C212D] p-2.5 transition hover:bg-[#112C3E]"
               aria-label="Abrir menú"
             >
               <MenuIcon className="h-5 w-5" />
             </button>
             <div className="min-w-0 text-center">
-              <h2 className="text-base font-semibold tracking-tight truncate">
-                {titleFor(active, location)}
-              </h2>
+              <div className="flex items-center justify-center gap-2">
+                <h2 className="text-base font-semibold tracking-tight truncate">
+                  {titleFor(active, location)}
+                </h2>
+                <HelpHint
+                  {...sectionHelpContent(active, location, isAdmin4)}
+                  align="center"
+                />
+              </div>
               <p className="text-xs text-white/60 truncate">
                 {subtitleFor(active, location)}
               </p>
             </div>
-            <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-xl bg-white/5 ring-1 ring-white/10">
+            <span className="inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-xl border border-white/10 bg-[#0C212D]">
               <Dot className={dotColor(location)} />
               {location === "pv1"
                 ? "PV1"
@@ -347,22 +391,23 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Contenedor limitado */}
-        <div className="flex-1 mx-auto w-full max-w-screen-xl px-4 sm:px-6 py-6 flex flex-col min-h-0">
+        {/* Contenedor principal */}
+        <div className="flex-1 mx-auto w-full max-w-screen-xl px-4 sm:px-6 py-6 flex flex-col">
           {/* Encabezado desktop */}
           <div className="hidden md:flex items-start sm:items-center justify-between mb-6 gap-3 shrink-0">
             <div className="min-w-0">
-              <h2 className="text-2xl font-semibold tracking-tight truncate">
-                {titleFor(active, location)}
-              </h2>
-              <p className="text-white/60 text-sm">
+              <div className="flex items-center gap-2">
+                <h2 className="text-2xl font-semibold tracking-tight truncate">
+                  {titleFor(active, location)}
+                </h2>
+                <HelpHint {...sectionHelpContent(active, location, isAdmin4)} />
+              </div>
+              <p className="text-slate-300 text-sm">
                 {subtitleFor(active, location)}
               </p>
             </div>
 
-            <span
-              className={`hidden sm:inline-flex items-center gap-3 text-sm px-4 py-2 rounded-2xl bg:white/5 ring-1 ring-white/10`}
-            >
+              <span className="hidden sm:inline-flex items-center gap-3 rounded-2xl border border-white/10 bg-[#0C212D] px-4 py-2 text-sm shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
               <Dot className={dotColor(location)} />
               <strong className="font-semibold">
                 {location === "pv1"
@@ -374,25 +419,27 @@ export default function Dashboard() {
             </span>
           </div>
 
-          {/* Visualizador */}
-          <div className="flex-1 rounded-2xl bg-[#112C3E]/80 border border-white/10 shadow-xl min-w-0 flex flex-col">
-            <div className="flex-1 min-w-0 w-full overflow-x-auto overscroll-x-contain p-4 sm:p-6">
+          {/* Vista activa */}
+          <div className="flex-1 min-w-0">
+            <div className="min-w-0 p-0 sm:p-0">
               {CurrentView}
             </div>
           </div>
         </div>
       </main>
+      </div>
     </div>
   );
 }
 
-/* ───────── Sidebar Header ───────── */
+/* Sidebar Header */
 function SidebarHeader({
   location,
   onChangeLocation,
   canPV1,
   canPV2,
   canTaller,
+  isAdmin4,
 }) {
   return (
     <div className="p-5 border-b border-white/10 shrink-0">
@@ -400,9 +447,12 @@ function SidebarHeader({
         <p className="text-xs text-white/60 leading-none">Mecánico App</p>
         <h1 className="text-base font-semibold">Panel</h1>
       </div>
-      <p className="text-[11px] uppercase tracking-widest text-white/50 mb-2">
-        Seleccioná la sede
-      </p>
+      <div className="mb-2 flex items-center gap-2">
+        <p className="text-[11px] uppercase tracking-widest text-white/50">
+          Seleccioná la sede
+        </p>
+        <HelpHint {...locationHelpContent(isAdmin4)} />
+      </div>
       <LocationDropdown
         value={location}
         onChange={onChangeLocation}
@@ -414,7 +464,7 @@ function SidebarHeader({
   );
 }
 
-/* ───────── AccessDenied ───────── */
+/* AccessDenied */
 function AccessDenied({ location }) {
   const label =
     location === "pv1"
@@ -423,7 +473,7 @@ function AccessDenied({ location }) {
         ? "Punto de Venta 2"
         : "Taller";
   return (
-    <div className="rounded-xl border border-white/10 p-6 bg-white/5">
+    <div className="rounded-[24px] border border-slate-700 bg-[#0E2330] p-6 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
       <h3 className="text-lg font-semibold">Acceso restringido</h3>
       <p className="text-sm text-white/70 mt-1">
         No tenés permisos para operar en <b>{label}</b>. Cambiá de sede o pedí
@@ -433,36 +483,57 @@ function AccessDenied({ location }) {
   );
 }
 
-/* ───────── Listado de navegación ───────── */
-function NavList({ navItems, active, onClickItem }) {
+function AccountInactive() {
+  return (
+    <div className="relative min-h-screen overflow-hidden bg-[#081821] text-white flex items-center justify-center p-6">
+      <div className="relative z-10 max-w-md rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(17,44,62,0.94),rgba(8,24,33,0.98))] p-6 text-center shadow-[0_24px_70px_rgba(0,0,0,0.42)]">
+        <h2 className="text-xl font-semibold">Cuenta inactiva</h2>
+        <p className="mt-2 text-sm text-white/70">
+          Tu usuario fue desactivado desde la aplicación. Pedile a un admin general
+          que vuelva a habilitarlo para recuperar el acceso.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* Listado de navegacion */
+function NavList({ navItems, active, onClickItem, location, isAdmin4 }) {
   return (
     <ul className="space-y-2">
       {navItems.map(({ id, label, icon: Icon }) => {
         const isActive = active === id;
+        const helpProps = navHelpContent(id, location, isAdmin4);
         return (
           <li key={id}>
-            <button
-              onClick={() => onClickItem(id)}
-              className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition relative ${
-                isActive
-                  ? "bg-white/10 ring-1 ring-white/10"
-                  : "hover:bg-white/5"
-              }`}
-            >
-              <span
-                className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r ${
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onClickItem(id)}
+                className={`group w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition relative ${
                   isActive
-                    ? "bg-gradient-to-b from-[#EE7203] to-[#FF3816]"
-                    : "bg-transparent"
+                    ? "bg-[#112C3E] ring-1 ring-white/10"
+                    : "hover:bg-[#112C3E]/70"
                 }`}
+              >
+                <span
+                  className={`absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r ${
+                    isActive
+                      ? "bg-gradient-to-b from-[#EE7203] to-[#FF3816]"
+                      : "bg-transparent"
+                  }`}
+                />
+                <Icon
+                  className={`h-5 w-5 ${
+                    isActive ? "" : "opacity-80 group-hover:opacity-100"
+                  }`}
+                />
+                <span className="text-sm">{label}</span>
+              </button>
+              <HelpHint
+                {...helpProps}
+                buttonClassName="h-8 w-8 rounded-xl bg-[#0C212D] text-white/60"
               />
-              <Icon
-                className={`h-5 w-5 ${
-                  isActive ? "" : "opacity-80 group-hover:opacity-100"
-                }`}
-              />
-              <span className="text-sm">{label}</span>
-            </button>
+            </div>
           </li>
         );
       })}
@@ -470,7 +541,7 @@ function NavList({ navItems, active, onClickItem }) {
   );
 }
 
-/* ───────── Dropdown de sede ───────── */
+/* Dropdown de sede */
 function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -511,8 +582,8 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
           }
         }}
         className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left ${
-          !allowed ? "opacity-50 cursor-not-allowed" : "hover:bg-white/5"
-        } ${value === id ? "bg-white/5" : ""}`}
+          !allowed ? "opacity-50 cursor-not-allowed" : "hover:bg-[#112C3E]/70"
+        } ${value === id ? "bg-[#112C3E]" : ""}`}
       >
         <span
           className={`h-8 w-8 rounded-lg ring-1 ring-white/10 bg-gradient-to-br ${grad} flex items-center justify-center shrink-0`}
@@ -523,7 +594,7 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
           <div className="flex items:center gap-2">
             <span className="text-sm font-semibold truncate">{label}</span>
             {!allowed && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 ring-1 ring-white/10">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#0C212D] ring-1 ring-white/10">
                 Sin permiso
               </span>
             )}
@@ -590,7 +661,7 @@ function LocationDropdown({ value, onChange, hasPV1, hasPV2, hasTaller }) {
   );
 }
 
-/* ───────── Views ───────── */
+/* Views */
 function HomeView({ location }) {
   return (
     <div className="space-y-4 min-w-0">
@@ -633,6 +704,13 @@ function HistorialView({ location }) {
     </div>
   );
 }
+function PresupuestosTallerView({ location, embeddedFrom }) {
+  return (
+    <div className="space-y-4 min-w-0">
+      <PresupuestosTaller location={location} embeddedFrom={embeddedFrom} />
+    </div>
+  );
+}
 function CuentasView() {
   return (
     <div className="space-y-4 min-w-0">
@@ -644,7 +722,7 @@ function ReportesView() {
   return <div className="space-y-4 min-w-0" />;
 }
 
-/* ───────── Iconos & utils ───────── */
+/* Iconos y utils */
 function HomeIcon({ className = "" }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none">
@@ -859,7 +937,7 @@ function ToolIcon({ className = "" }) {
   );
 }
 
-/* ───────── Utils ───────── */
+/* Utils */
 function titleFor(active, loc) {
   if (loc === "taller") {
     switch (active) {
@@ -879,6 +957,8 @@ function titleFor(active, loc) {
   switch (active) {
     case "ventas":
       return "Ventas";
+    case "presupuestosTallerPv":
+      return "Presupuestos de Taller";
     case "caja":
       return "Caja";
     case "inventario":
@@ -915,6 +995,8 @@ function subtitleFor(active, loc) {
   switch (active) {
     case "ventas":
       return "Registrá ventas y cobros por sede.";
+    case "presupuestosTallerPv":
+      return "Cotizá trabajos de taller desde la sede actual sin mover stock.";
     case "caja":
       return "Controlá ingresos, egresos y el estado de caja del turno.";
     case "inventario":
@@ -941,4 +1023,214 @@ function dotColor(loc) {
 function defaultActiveFor(loc, isAdmin) {
   if (loc === "taller" && !isAdmin) return "mecanicos";
   return "home";
+}
+
+function locationHelpContent(isAdmin4 = false) {
+  return {
+    title: "Selector de sede",
+    description:
+      "Cada sede separa la operación diaria para que trabajes sobre el lugar correcto.",
+    sections: [
+      {
+        label: "Qué es",
+        value:
+          "Es el selector que cambia entre Punto de Venta 1, Punto de Venta 2 y Taller.",
+      },
+      {
+        label: "Qué hace",
+        value:
+          "Filtra las vistas, ventas, caja y herramientas según la sede elegida.",
+      },
+      {
+        label: "Quién lo ve",
+        value: isAdmin4
+          ? "El admin general puede cambiar entre todas las sedes habilitadas."
+          : "Cada usuario ve solo las sedes para las que tiene permiso.",
+      },
+      {
+        label: "Uso interno",
+        value:
+          "Sí. Sirve para operar el negocio por sector o sucursal, no para clientes finales.",
+      },
+    ],
+  };
+}
+
+function sectionHelpContent(active, loc, isAdmin4) {
+  if (loc === "taller") {
+    switch (active) {
+      case "clientes":
+        return {
+          title: "Clientes del taller",
+          description:
+            "Acá se administra la base de clientes y vehículos del taller.",
+          sections: [
+            { label: "Qué es", value: "Es el directorio interno de clientes del taller." },
+            { label: "Qué hace", value: "Permite registrar teléfonos, vehículos y consultar el historial básico de cada cliente." },
+            { label: "Quién lo ve", value: "Lo ven usuarios con acceso al taller y el admin general." },
+            { label: "Uso interno", value: "Sí. Estos datos los usa el equipo para presupuestos, trabajos y contacto." },
+          ],
+        };
+      case "trabajos":
+        return {
+          title: "Trabajos del taller",
+          description:
+            "Esta vista organiza las órdenes según su estado para seguir el avance del taller.",
+          sections: [
+            { label: "Qué es", value: "Es el tablero interno de órdenes de trabajo." },
+            { label: "Qué hace", value: "Permite crear, editar, asignar mecánicos, mover estados y dejar comentarios del trabajo." },
+            { label: "Quién lo ve", value: "Lo ven usuarios autorizados del taller y el admin general." },
+            { label: "Uso interno", value: "Sí. El cliente no ve esta vista; se usa para coordinar tareas y seguimiento." },
+          ],
+        };
+      case "presupuestos":
+        return {
+          title: "Presupuestos del taller",
+          description:
+            "Desde acá se arman cotizaciones para trabajos y se pueden compartir por WhatsApp.",
+          sections: [
+            { label: "Qué es", value: "Es la sección interna para preparar presupuestos del taller." },
+            { label: "Qué hace", value: "Permite cargar ítems, total estimado, notas y enviar el detalle al cliente." },
+            { label: "Quién lo ve", value: "Lo ve el personal del taller con permiso y el admin general." },
+            { label: "Uso interno", value: "Sí. El cliente solo recibe el mensaje o el importe compartido." },
+          ],
+        };
+      case "mecanicos":
+        return {
+          title: "Panel de mecánico",
+          description:
+            "Es la vista operativa para que cada mecánico siga sus órdenes asignadas.",
+          sections: [
+            { label: "Qué es", value: "Es la pantalla de trabajo diario del mecánico." },
+            { label: "Qué hace", value: "Muestra trabajos asignados, estado, checklist y comentarios vinculados." },
+            { label: "Quién lo ve", value: isAdmin4 ? "La puede ver el admin general y también los mecánicos con permiso 3." : "La ven los mecánicos con acceso al taller." },
+            { label: "Uso interno", value: "Sí. Está pensada para coordinación interna del equipo." },
+          ],
+        };
+      default:
+        return {
+          title: "Resumen del taller",
+          description:
+            "Es una vista general con indicadores rápidos del sector taller.",
+          sections: [
+            { label: "Qué es", value: "Es el panel de resumen interno del taller." },
+            { label: "Qué hace", value: "Muestra métricas, estados y actividad reciente para tener contexto rápido." },
+            { label: "Quién lo ve", value: "Lo ve el admin general cuando entra a la sede Taller." },
+            { label: "Uso interno", value: "Sí. Solo sirve para gestión operativa." },
+          ],
+        };
+    }
+  }
+
+  switch (active) {
+    case "presupuestosTallerPv":
+      return {
+        title: "Presupuestos de taller",
+        description:
+          "Esta vista permite preparar presupuestos de taller completos desde el punto de venta actual.",
+        sections: [
+          {
+            label: "Qué es",
+            value:
+              "Es una entrada operativa para cotizar trabajos del taller sin salir de la sede actual.",
+          },
+          {
+            label: "Qué hace",
+            value:
+              "Permite cargar cliente, vehículo, servicios, productos y dejar armado el desglose a órdenes de trabajo.",
+          },
+          {
+            label: "Quién lo ve",
+            value:
+              "La ven usuarios que tienen acceso al taller además de la sede actual, y el admin general.",
+          },
+          {
+            label: "Uso interno",
+            value:
+              "Sí. El presupuesto no descuenta stock; solo ordena la cotización y el trabajo futuro.",
+          },
+        ],
+      };
+    case "ventas":
+      return {
+        title: "Ventas",
+        description: "Esta pantalla se usa para cobrar y registrar ventas de la sede actual.",
+        sections: [
+          { label: "Qué es", value: "Es el punto de venta interno del negocio." },
+          { label: "Qué hace", value: "Permite buscar productos, armar un carrito, cobrar y guardar la venta." },
+          { label: "Quién lo ve", value: "Lo ven usuarios con permiso para la sede actual y el admin general." },
+          { label: "Uso interno", value: "Sí. El cliente solo participa en el momento del cobro." },
+        ],
+      };
+    case "caja":
+      return {
+        title: "Caja",
+        description: "Acá se controla la plata que debería haber en la caja y los movimientos del turno.",
+        sections: [
+          { label: "Qué es", value: "Es el control interno de ingresos y egresos por sede." },
+          { label: "Qué hace", value: "Muestra saldos, movimientos y permite registrar gastos pagados desde caja." },
+          { label: "Quién lo ve", value: "Lo ven usuarios de la sede actual y el admin general." },
+          { label: "Uso interno", value: "Sí. No está pensado para mostrarlo a clientes." },
+        ],
+      };
+    case "inventario":
+      return {
+        title: "Inventario",
+        description: "Se usa para mantener ordenados los productos y su información base.",
+        sections: [
+          { label: "Qué es", value: "Es la sección interna de administración de productos." },
+          { label: "Qué hace", value: "Permite revisar datos, precios, categorías y referencias del inventario." },
+          { label: "Quién lo ve", value: "Lo ven usuarios habilitados de la sede y el admin general." },
+          { label: "Uso interno", value: "Sí. Sirve para gestión operativa del negocio." },
+        ],
+      };
+    case "stock":
+      return {
+        title: "Stock",
+        description: "Desde acá se controla la existencia real de productos en la sede.",
+        sections: [
+          { label: "Qué es", value: "Es la vista de control de stock por sede." },
+          { label: "Qué hace", value: "Permite detectar faltantes, revisar cantidades y hacer seguimiento operativo." },
+          { label: "Quién lo ve", value: "Lo ven usuarios con permiso en la sede y el admin general." },
+          { label: "Uso interno", value: "Sí. Se usa para ordenar reposición y control interno." },
+        ],
+      };
+    case "historial":
+      return {
+        title: "Historial de ventas",
+        description: "Esta sección sirve para consultar ventas ya realizadas.",
+        sections: [
+          { label: "Qué es", value: "Es el historial interno de operaciones de venta." },
+          { label: "Qué hace", value: "Permite revisar ventas registradas, sus datos y estados relacionados." },
+          { label: "Quién lo ve", value: "Lo ven usuarios con permiso en la sede y el admin general." },
+          { label: "Uso interno", value: "Sí. Es una herramienta administrativa y de seguimiento." },
+        ],
+      };
+    case "cuentas":
+      return {
+        title: "Cuentas",
+        description: "Esta sección centraliza usuarios, permisos y configuraciones sensibles de operación.",
+        sections: [
+          { label: "Qué es", value: "Es el módulo interno de administración de cuentas." },
+          { label: "Qué hace", value: "Permite crear usuarios, asignar permisos y configurar cobros integrados." },
+          { label: "Quién lo ve", value: "Solo lo ve el admin general con permiso 4." },
+          { label: "Uso interno", value: "Sí. No está pensado para uso de clientes finales." },
+        ],
+      };
+    default:
+      return {
+        title: "Inicio",
+        description: "Es el resumen principal de la sede actual.",
+        sections: [
+          { label: "Qué es", value: "Es la portada interna del panel." },
+          { label: "Qué hace", value: "Muestra accesos rápidos e información general para empezar a trabajar." },
+          { label: "Quién lo ve", value: "Lo ven usuarios con acceso a la sede actual y el admin general." },
+          { label: "Uso interno", value: "Sí. Está pensada para operación diaria del negocio." },
+        ],
+      };
+  }
+}
+
+function navHelpContent(id, location, isAdmin4) {
+  return sectionHelpContent(id, location, isAdmin4);
 }

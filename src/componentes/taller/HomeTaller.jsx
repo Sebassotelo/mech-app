@@ -63,18 +63,14 @@ export default function HomeTaller() {
       return { ...t, __estado: estado };
     });
 
+    const sinComenzar = trabajosConEstado.filter((t) => {
+      const e = t.__estado;
+      return e === "sin comenzar" || e === "pendiente";
+    });
+
     const enProceso = trabajosConEstado.filter((t) => {
       const e = t.__estado;
-      // Heurística: si no está "finalizado/listo/entregado/cerrado" se considera en proceso
-      if (!e) return true;
-      if (
-        e.includes("final") ||
-        e.includes("list") ||
-        e.includes("entreg") ||
-        e.includes("cerr")
-      )
-        return false;
-      return true;
+      return e === "en proceso";
     });
 
     const finalizados = trabajosConEstado.filter((t) => {
@@ -115,19 +111,6 @@ export default function HomeTaller() {
 
     // ============ PRESUPUESTOS ============
     const totalPresupuestos = presupuestos.length;
-
-    // Pendientes: heurística -> si no tiene vinculación a trabajo o no está marcado como "aprobado"
-    const pendientes = presupuestos.filter((p) => {
-      const estado = String(p?.estado || "").toLowerCase();
-      if (
-        estado.includes("aprob") ||
-        estado.includes("acept") ||
-        estado.includes("ok")
-      )
-        return false;
-      if (p?.workOrderId || p?.trabajoId) return false;
-      return true;
-    });
 
     const creadosHoyPresu = presupuestos.filter((p) => {
       const dt = safeDate(p?.createdAt);
@@ -175,6 +158,7 @@ export default function HomeTaller() {
 
     return {
       totalTrabajos,
+      sinComenzar: sinComenzar.length,
       enProceso: enProceso.length,
       finalizados: finalizados.length,
       listosHoy: listosHoy.length,
@@ -182,7 +166,6 @@ export default function HomeTaller() {
       semanaTrabajos: semanaTrabajosCreados.length,
 
       totalPresupuestos,
-      pendientes: pendientes.length,
       creadosHoyPresu: creadosHoyPresu.length,
       semanaPresu: semanaPresupuestos.length,
       totalPresuSemana,
@@ -229,13 +212,13 @@ export default function HomeTaller() {
           icon={<FiTool />}
           label="Trabajos en proceso"
           value={metrics.enProceso}
-          sub={`Hoy: +${metrics.creadosHoy} | Semana: ${metrics.semanaTrabajos}`}
+          sub={`Sin comenzar: ${metrics.sinComenzar} | Hoy: +${metrics.creadosHoy}`}
           accent="emerald"
         />
         <MetricCard
           icon={<FiFileText />}
-          label="Presupuestos"
-          value={metrics.pendientes}
+          label="Presupuestos registrados"
+          value={metrics.totalPresupuestos}
           sub={`Hoy: +${metrics.creadosHoyPresu} | Semana: ${metrics.semanaPresu}`}
           accent="amber"
         />
@@ -288,7 +271,7 @@ export default function HomeTaller() {
                     t?.clienteNombre || t?.cliente || "(sin cliente)";
                   const vehiculo = t?.vehiculo || t?.vehiculoRef || "";
                   const estadoRaw = String(
-                    t?.estado || t?.status || "en proceso",
+                    t?.estado || t?.status || "Sin estado",
                   );
                   return (
                     <div
@@ -352,8 +335,8 @@ export default function HomeTaller() {
                   const estado = String(
                     p?.estado ||
                       (p?.workOrderId || p?.trabajoId
-                        ? "asignado"
-                        : "pendiente"),
+                        ? "vinculado"
+                        : "sin estado"),
                   );
                   return (
                     <div

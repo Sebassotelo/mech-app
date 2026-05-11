@@ -1,7 +1,10 @@
-"use client";
+﻿"use client";
 import React, { useContext, useMemo, useState, useEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import ContextGeneral from "@/servicios/contextGeneral";
+import useDismissibleModal from "@/hooks/useDismissibleModal";
+import HelpHint from "@/componentes/HelpHint";
 import {
   collection,
   doc,
@@ -66,6 +69,7 @@ export default function Ventas({ location = "pv1" }) {
   const presupuestos = Array.isArray(ctx?.presupuestos) ? ctx.presupuestos : [];
   const loadingBudgets = !!ctx?.presupuestosLoading;
   const fetchPresupuestos = ctx?.fetchPresupuestos;
+  const ventasCtx = Array.isArray(ctx?.ventas) ? ctx.ventas : [];
 
   const [q, setQ] = useState("");
   const [onlyStock, setOnlyStock] = useState(false);
@@ -87,7 +91,7 @@ export default function Ventas({ location = "pv1" }) {
   const [discountPercent, setDiscountPercent] = useState(0);
   const [discountFixed, setDiscountFixed] = useState(0);
 
-  // 🔁 Flag para no pisar LS antes de cargar
+  // Flag para no pisar LS antes de cargar
   const [hydrated, setHydrated] = useState(false);
 
   // ===== Filtro de presupuestos (solo UI) =====
@@ -101,6 +105,21 @@ export default function Ventas({ location = "pv1" }) {
 
   // ===== Drawer Carrito
   const [cartOpen, setCartOpen] = useState(false);
+  const [paymentMonitor, setPaymentMonitor] = useState(null);
+  const [paymentQueueOpen, setPaymentQueueOpen] = useState(false);
+  const [cancelingMonitorKey, setCancelingMonitorKey] = useState("");
+  const [reconcilingMonitorKey, setReconcilingMonitorKey] = useState("");
+
+  const getMpRequestHeaders = async () => {
+    if (!auth?.currentUser) {
+      throw new Error("No hay sesión activa para operar con Mercado Pago");
+    }
+    const idToken = await auth.currentUser.getIdToken();
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    };
+  };
 
   // ==========================
   // Carga inicial desde localStorage
@@ -158,7 +177,7 @@ export default function Ventas({ location = "pv1" }) {
     setHydrated(true);
   }, []);
 
-  // 🔁 Persistir configuración
+  // Persistir configuración
   useEffect(() => {
     if (!hydrated) return;
     try {
@@ -232,7 +251,7 @@ export default function Ventas({ location = "pv1" }) {
         // 1. Descartar muy cortos
         if (c.length <= 2) return false;
 
-        // 2. FILTRO ESPECÍFICO: Ocultar el código basura exacto
+        // 2. FILTRO ESPECIFICO: Ocultar el código basura exacto
         if (c === "EQ-X8YULX12") return false;
 
         return true;
@@ -466,6 +485,7 @@ export default function Ventas({ location = "pv1" }) {
     return pad3(ids[ids.length - 1]);
   }
   async function appendVentaChunked(ventaObj) {
+    const ventaId = `v_${Date.now()}`;
     let targetId = await getLastVentasDocId();
     let attempts = 0;
     while (attempts < 3) {
@@ -476,12 +496,11 @@ export default function Ventas({ location = "pv1" }) {
           const data = snap.exists() ? snap.data() || {} : {};
           const keys = Object.keys(data).filter((k) => k.startsWith("v_"));
           if (keys.length >= CHUNK_SIZE) throw new Error("FULL");
-          const ventaId = `v_${Date.now()}`;
           const toWrite = {};
           toWrite[ventaId] = ventaObj;
           tx.set(ref, toWrite, { merge: true });
         });
-        return { ok: true, docId: targetId };
+        return { ok: true, docId: targetId, ventaId };
       } catch (e) {
         if (String(e?.message).includes("FULL")) {
           targetId = pad3(parseInt(targetId, 10) + 1);
@@ -491,6 +510,7 @@ export default function Ventas({ location = "pv1" }) {
         throw e;
       }
     }
+    throw new Error("No se pudo guardar la venta en Firestore");
   }
 
   /* =========================
@@ -775,7 +795,7 @@ export default function Ventas({ location = "pv1" }) {
   }
 
   /* =========================
-   * STOCK RÁPIDO (admin/manager)
+   * STOCK RAPIDO (admin/manager)
    * ========================= */
   async function addStockQuick(prod) {
     const deltaStr = prompt(
@@ -842,30 +862,133 @@ export default function Ventas({ location = "pv1" }) {
       groups[cd].push(it);
     }
 
-    const run = async () => {
-      // 1) Descontar stock por chunk
+    const isMercadoPago = paymentMethod === "mercadago";
+
+    const updateStockByGroups = async (direction = -1) => {
       for (const [chunkId, chunkLines] of Object.entries(groups)) {
         const ref = doc(firestore, "productos", chunkId);
         await runTransaction(firestore, async (tx) => {
           const snap = await tx.get(ref);
           if (!snap.exists())
             throw new Error("Documento de productos no existe");
+
           const data = snap.data() || {};
           const updates = {};
+
           for (const { prod, qty } of chunkLines) {
             const field = `p_${prod.id}`;
             const obj = data[field];
             if (!obj) throw new Error(`Producto ${prod.name} no encontrado`);
+
             const current = parseInt(obj[stockField] ?? 0, 10);
-            if (current < qty)
+            const next = current + Number(qty) * direction;
+
+            if (next < 0) {
               throw new Error(`Stock insuficiente para ${prod.name}`);
-            const next = current - qty;
+            }
+
             updates[`${field}.${stockField}`] = next;
             updates[`${field}.updatedAt`] = serverTimestamp();
           }
+
           tx.update(ref, updates);
         });
       }
+    };
+
+    const syncStockInMemory = (direction = -1) => {
+      if (typeof ctx?.setProductos !== "function") return;
+
+      ctx.setProductos((prev = []) =>
+        prev.map((p) => {
+          const hit = lines.find((l) => l.prod.id === p.id);
+          if (!hit) return p;
+
+          const cur = parseInt(p[stockField] ?? 0, 10);
+          const next = Math.max(0, cur + hit.qty * direction);
+          return { ...p, [stockField]: next };
+        }),
+      );
+    };
+
+    const markVentaMpError = async (
+      chunkDocId,
+      ventaKey,
+      message,
+      { releaseReservation = false } = {},
+    ) => {
+      const ref = doc(firestore, "ventas", chunkDocId);
+      const updates = {
+        [`${ventaKey}.status`]: "payment_error",
+        [`${ventaKey}.payment.status`]: "error",
+        [`${ventaKey}.payment.errorMessage`]: String(message || "")
+          .slice(0, 250),
+        [`${ventaKey}.payment.updatedAt`]: serverTimestamp(),
+      };
+
+      if (releaseReservation) {
+        updates[`${ventaKey}.stockReservationActive`] = false;
+        updates[`${ventaKey}.stockReleasedAt`] = serverTimestamp();
+      }
+
+      await updateDoc(ref, updates);
+    };
+
+    const getMpRequestHeaders = async () => {
+      if (!auth?.currentUser) {
+        throw new Error("No hay sesión activa para operar con Mercado Pago");
+      }
+      const idToken = await auth.currentUser.getIdToken();
+      return {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      };
+    };
+
+    const createMercadoPagoOrder = async ({ ventaKey, chunkDocId, total, lines }) => {
+      const headers = await getMpRequestHeaders();
+      const res = await fetch("/api/mp/create-order", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ventaKey, chunkDocId, total, lines }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "No se pudo cargar la venta en Mercado Pago",
+        );
+      }
+
+      return data;
+    };
+
+    const run = async () => {
+      const initialMonitor = isMercadoPago
+        ? {
+            ventaId: null,
+            chunkDocId: null,
+            open: true,
+            total: Number(total),
+            itemCount: lines.length,
+            location,
+            orderId: null,
+            paymentId: null,
+            paymentStatus: "preparing",
+            status: "payment_preparing",
+          }
+        : null;
+
+      if (initialMonitor) {
+        flushSync(() => {
+          setPaymentQueueOpen(false);
+          setCartOpen(false);
+          setPaymentMonitor(initialMonitor);
+        });
+      }
+
+      // 1) Reservar/descontar stock por chunk
+      await updateStockByGroups(-1);
 
       // 2) Registrar venta
       const user = auth?.currentUser || ctx?.user || null;
@@ -895,8 +1018,9 @@ export default function Ventas({ location = "pv1" }) {
         },
         payment: {
           method: paymentMethod,
-          provider: paymentMethod === "mercadago" ? "mercadopago" : "manual",
-          status: "not_started",
+          provider: isMercadoPago ? "mercadopago" : "manual",
+          status: isMercadoPago ? "pending" : "approved",
+          updatedAt: serverTimestamp(),
           surcharge: {
             applied: !!applyExtra,
             mode: extraMode,
@@ -916,33 +1040,130 @@ export default function Ventas({ location = "pv1" }) {
             amount: Number(discountAmount),
           },
         },
-        status: "pending",
+        status: isMercadoPago ? "payment_pending" : "paid",
+        stockReservationActive: !!isMercadoPago,
+        stockReservedAt: isMercadoPago ? serverTimestamp() : null,
       };
 
-      await appendVentaChunked(ventaPayload);
+      let ventaSaved;
+      try {
+        ventaSaved = await appendVentaChunked(ventaPayload);
+        if (initialMonitor) {
+          setPaymentMonitor((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  ventaId: ventaSaved.ventaId,
+                  chunkDocId: ventaSaved.docId,
+                }
+              : prev,
+          );
+        }
+      } catch (err) {
+        if (initialMonitor) {
+          setPaymentMonitor((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  paymentStatus: "error",
+                  status: "payment_error",
+                }
+              : prev,
+          );
+        }
+        await updateStockByGroups(1);
+        throw err;
+      }
+
+      let mpOrder = null;
+      if (isMercadoPago) {
+        try {
+          mpOrder = await createMercadoPagoOrder({
+            ventaKey: ventaSaved.ventaId,
+            chunkDocId: ventaSaved.docId,
+            total: ventaPayload.totals.total,
+            lines: ventaPayload.lines,
+          });
+          setPaymentMonitor((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  orderId: mpOrder?.orderId || null,
+                  paymentId: mpOrder?.paymentId || null,
+                  paymentStatus: "pending",
+                  status: "payment_pending",
+                }
+              : prev,
+          );
+        } catch (err) {
+          await updateStockByGroups(1);
+          syncStockInMemory(1);
+          await markVentaMpError(ventaSaved.docId, ventaSaved.ventaId, err?.message, {
+            releaseReservation: true,
+          });
+          setPaymentMonitor((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  paymentStatus: "error",
+                  status: "payment_error",
+                }
+              : prev,
+          );
+          throw new Error(
+            "La venta quedó guardada, pero no se pudo cargar el QR de Mercado Pago.",
+          );
+        }
+      }
 
       // 3) Actualizar stock en memoria
-      if (typeof ctx?.setProductos === "function") {
-        ctx.setProductos((prev = []) =>
-          prev.map((p) => {
-            const hit = lines.find((l) => l.prod.id === p.id);
-            if (!hit) return p;
-            const cur = parseInt(p[stockField] ?? 0, 10);
-            const next = Math.max(0, cur - hit.qty);
-            return { ...p, [stockField]: next };
-          }),
-        );
-      }
+      syncStockInMemory(-1);
+
+      return {
+        isMercadoPago,
+        ventaId: ventaSaved.ventaId,
+        chunkDocId: ventaSaved.docId,
+        total: ventaPayload.totals.total,
+        itemCount: ventaPayload.lines.length,
+        location,
+        orderId: mpOrder?.orderId || null,
+        paymentId: mpOrder?.paymentId || null,
+      };
     };
 
     try {
-      await toast.promise(run(), {
-        loading: "Procesando venta…",
-        success: "Venta registrada y stock actualizado.",
+      const result = await toast.promise(run(), {
+        loading: isMercadoPago
+          ? "Cargando venta en el QR de Mercado Pago…"
+          : "Procesando venta…",
+        success: ({ isMercadoPago: mp }) =>
+          mp
+            ? "Venta lista. El cliente ya puede escanear el QR del local."
+            : "Venta registrada y stock actualizado.",
         error: (e) => e?.message || "No se pudo completar la venta",
       });
-      setCart({});
-      setCartOpen(false);
+      if (result?.isMercadoPago) {
+        setPaymentMonitor((prev) =>
+          prev
+            ? {
+                ...prev,
+                ventaId: result.ventaId,
+                chunkDocId: result.chunkDocId,
+                total: result.total,
+                itemCount: result.itemCount,
+                location: result.location,
+                orderId: result.orderId,
+                paymentId: result.paymentId,
+                paymentStatus: result.orderId ? "pending" : prev.paymentStatus,
+                status: result.orderId ? "payment_pending" : prev.status,
+              }
+            : prev,
+        );
+        setCart({});
+      } else {
+        setCart({});
+        setCartOpen(false);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -1005,6 +1226,167 @@ export default function Ventas({ location = "pv1" }) {
 
   const cartCount = Object.values(cart).length;
   const cartTotalStr = money(total);
+  const trackedVenta = useMemo(() => {
+    if (!paymentMonitor?.ventaId || !paymentMonitor?.chunkDocId) return null;
+    return (
+      ventasCtx.find(
+        (venta) =>
+          venta?.id === paymentMonitor.ventaId &&
+          venta?.chunkDoc === paymentMonitor.chunkDocId,
+      ) || null
+    );
+  }, [paymentMonitor, ventasCtx]);
+  const trackedMonitorStatus = getVentaMonitorStatus(
+    trackedVenta || paymentMonitor,
+  );
+  const shouldShowMonitorShortcut = ["preparing", "pending", "error"].includes(
+    trackedMonitorStatus,
+  );
+  const mpVentasByLocation = useMemo(() => {
+    return ventasCtx
+      .filter((venta) => venta?.location === location)
+      .filter(
+        (venta) =>
+          String(venta?.payment?.provider || "").toLowerCase() ===
+          "mercadopago",
+      )
+      .filter((venta) => !String(venta?.status || "").toLowerCase().includes("void"))
+      .sort((a, b) => {
+        const aStatus = getVentaMonitorStatus(a);
+        const bStatus = getVentaMonitorStatus(b);
+        const aPending = aStatus === "pending" ? 0 : 1;
+        const bPending = bStatus === "pending" ? 0 : 1;
+        if (aPending !== bPending) return aPending - bPending;
+        return getVentaUpdatedMs(b) - getVentaUpdatedMs(a);
+      });
+  }, [ventasCtx, location]);
+  const mpVentasPending = useMemo(
+    () =>
+      mpVentasByLocation.filter(
+        (venta) => getVentaMonitorStatus(venta) === "pending",
+      ),
+    [mpVentasByLocation],
+  );
+  const mpVentasRecent = useMemo(
+    () =>
+      mpVentasByLocation
+        .filter((venta) => getVentaMonitorStatus(venta) !== "pending")
+        .slice(0, 6),
+    [mpVentasByLocation],
+  );
+  const hasPaymentQueue = mpVentasByLocation.length > 0;
+  const activeMonitorVenta = trackedVenta || paymentMonitor || null;
+
+  async function cancelMercadoPagoVenta(targetVenta) {
+    const venta = targetVenta || activeMonitorVenta;
+    const ventaKey = venta?.id || paymentMonitor?.ventaId || "";
+    const chunkDocId = venta?.chunkDoc || paymentMonitor?.chunkDocId || "";
+    const monitorKey = `${chunkDocId}_${ventaKey}`;
+    const orderId =
+      getLatestPaymentEntry(venta)?.orderId ||
+      venta?.payment?.orderId ||
+      paymentMonitor?.orderId ||
+      null;
+
+    if (!orderId) {
+      toast.error("La venta todavia no tiene una order valida para cancelar.");
+      return;
+    }
+
+    setCancelingMonitorKey(monitorKey);
+    try {
+      const headers = await getMpRequestHeaders();
+      const res = await fetch("/api/mp/cancel-order", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ orderId }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "No se pudo cancelar la venta en Mercado Pago",
+        );
+      }
+
+      toast.success(
+        data?.status === "canceled"
+          ? "Venta cancelada y reserva liberada."
+          : "La venta ya fue actualizada con su ultimo estado.",
+      );
+    } catch (err) {
+      toast.error(err?.message || "No se pudo cancelar la venta");
+    } finally {
+      setCancelingMonitorKey("");
+    }
+  }
+
+  async function reconcileMercadoPagoVenta(targetVenta) {
+    const venta = targetVenta || activeMonitorVenta;
+    const ventaKey = venta?.id || paymentMonitor?.ventaId || "";
+    const chunkDocId = venta?.chunkDoc || paymentMonitor?.chunkDocId || "";
+    const monitorKey = `${chunkDocId}_${ventaKey}`;
+    const orderId =
+      getLatestPaymentEntry(venta)?.orderId ||
+      venta?.payment?.orderId ||
+      paymentMonitor?.orderId ||
+      null;
+
+    if (!orderId) {
+      toast.error("La venta todavia no tiene una order valida para consultar.");
+      return;
+    }
+
+    setReconcilingMonitorKey(monitorKey);
+    try {
+      const headers = await getMpRequestHeaders();
+      const res = await fetch("/api/mp/reconcile-order", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ orderId }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          data?.error || "No se pudo consultar el estado en Mercado Pago",
+        );
+      }
+
+      const normalizedStatus = String(data?.status || "").toLowerCase();
+      if (normalizedStatus === "approved") {
+        toast.success("Pago confirmado y venta actualizada.");
+      } else if (normalizedStatus === "pending") {
+        toast.message("El pago sigue pendiente en Mercado Pago.");
+      } else if (normalizedStatus === "canceled" || normalizedStatus === "expired") {
+        toast.message("La venta fue actualizada con el ultimo estado de Mercado Pago.");
+      } else {
+        toast.success("Estado del pago reconsultado correctamente.");
+      }
+    } catch (err) {
+      toast.error(err?.message || "No se pudo consultar el pago");
+    } finally {
+      setReconcilingMonitorKey("");
+    }
+  }
+
+  function openPaymentMonitor(venta) {
+    setPaymentMonitor({
+      ventaId: venta?.id,
+      chunkDocId: venta?.chunkDoc,
+      open: true,
+      total: venta?.totals?.total || 0,
+      itemCount: Array.isArray(venta?.lines) ? venta.lines.length : 0,
+      location: venta?.location || location,
+      orderId:
+        getLatestPaymentEntry(venta)?.orderId || venta?.payment?.orderId || null,
+      paymentId: getLatestPaymentEntry(venta)?.paymentId || null,
+    });
+    setPaymentQueueOpen(false);
+  }
+
+  const floatingRailClass =
+    "fixed left-3 right-3 md:left-auto md:right-4 md:w-[280px] z-40";
 
   // Responsive polish: FAB full-width en mobile + safe-area
   const fabClass =
@@ -1015,8 +1397,121 @@ export default function Ventas({ location = "pv1" }) {
 
   return (
     <div className="relative pb-24">
+      {false && (mpVentasPending.length > 0 || mpVentasRecent.length > 0) && (
+        <section className="mb-3 rounded-2xl border border-slate-700 bg-[#0E2330] p-3 sm:p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
+                Mercado Pago
+              </div>
+              <h3 className="mt-1 text-base font-semibold">Cobros en curso</h3>
+              <p className="mt-1 text-sm text-white/60">
+                Seguimiento en tiempo real de ventas cargadas al QR de esta sede.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <MiniStat
+                label="Pendientes"
+                value={String(mpVentasPending.length)}
+                tone="sky"
+              />
+              <MiniStat
+                label="Recientes"
+                value={String(mpVentasRecent.length)}
+                tone="white"
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-2xl border border-white/10 bg-[#0C212D] p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="font-medium">Pendientes</div>
+                <div className="text-xs text-white/45">
+                  {mpVentasPending.length > 0
+                    ? "Se actualiza solo con el webhook"
+                    : "Sin cobros pendientes"}
+                </div>
+              </div>
+              {mpVentasPending.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-sm text-white/50">
+                  No hay ventas de Mercado Pago esperando pago en este momento.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {mpVentasPending.slice(0, 6).map((venta) => (
+                    <PaymentQueueRow
+                      key={`${venta.chunkDoc}_${venta.id}`}
+                      venta={venta}
+                      onOpen={() => openPaymentMonitor(venta)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[#0C212D] p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="font-medium">Últimas resueltas</div>
+                <div className="text-xs text-white/45">Aprobadas o cerradas</div>
+              </div>
+              {mpVentasRecent.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-sm text-white/50">
+                  Todavía no hay cobros de Mercado Pago resueltos en esta sede.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {mpVentasRecent.map((venta) => (
+                    <PaymentQueueRow
+                      key={`${venta.chunkDoc}_${venta.id}`}
+                      venta={venta}
+                      compact
+                      onOpen={() => openPaymentMonitor(venta)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Controles + Tabla */}
-      <div className="mb-3 w-full rounded-2xl border border-white/10 bg-white/[0.03] p-2 sm:p-3">
+      <div className="mb-3 w-full rounded-2xl border border-slate-700 bg-[#0E2330] p-2 sm:p-3">
+        <div className="mb-3 flex items-start justify-between gap-3 border-b border-white/10 px-1 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Venta rápida</h3>
+            <p className="mt-1 text-xs text-white/55">
+              Buscá productos, armá el carrito y registrá el cobro de esta sede.
+            </p>
+          </div>
+          <HelpHint
+            title="Ventas"
+            description="Esta vista se usa para operar el punto de venta de la sede actual."
+            sections={[
+              {
+                label: "Qué es",
+                value:
+                  "Es la pantalla interna para buscar productos y concretar ventas.",
+              },
+              {
+                label: "Qué hace",
+                value:
+                  "Permite filtrar productos, usar equivalencias, cargar cantidades y cobrar con el método elegido.",
+              },
+              {
+                label: "Quién lo ve",
+                value:
+                  "La ven usuarios con permiso en la sede actual y el admin general.",
+              },
+              {
+                label: "Uso interno",
+                value:
+                  "Sí. El cliente participa solo durante la operación de compra.",
+              },
+            ]}
+          />
+        </div>
         <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 w-full">
           {/* Input de búsqueda + botón limpiar debajo */}
           <div className="w-full sm:flex-1 flex flex-col gap-1 min-w-0">
@@ -1152,7 +1647,7 @@ export default function Ventas({ location = "pv1" }) {
       {/* Tabla md+ */}
       <div
         ref={tableScrollRef}
-        className="hidden md:block overflow-x-auto rounded-2xl border border-white/10 select-none cursor-grab active:cursor-grabbing"
+        className="hidden md:block overflow-x-auto rounded-2xl border border-slate-700 bg-[#0E2330] select-none cursor-grab active:cursor-grabbing"
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseLeave={endDrag}
@@ -1161,7 +1656,7 @@ export default function Ventas({ location = "pv1" }) {
         title="Arrastrá para desplazarte horizontalmente"
       >
         <table className="w-full text-sm table-fixed">
-          <thead className="bg-white/5 text-white/70">
+          <thead className="bg-[#0A1B25] text-white/70">
             <tr>
               {cols.sku && <Th className="w-32">SKU</Th>}
               {cols.name && <Th>Nombre</Th>}
@@ -1331,7 +1826,7 @@ export default function Ventas({ location = "pv1" }) {
             return (
               <div
                 key={`${p.chunkDoc}_${p.id}`}
-                className={`rounded-2xl border border-white/10 p-3 w-full ${isIndirect ? "bg-[#EE7203]/10" : "bg-white/5"}`}
+                className={`rounded-2xl border border-slate-700 p-3 w-full ${isIndirect ? "bg-[#EE7203]/10" : "bg-[#132836]"}`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -1476,7 +1971,7 @@ export default function Ventas({ location = "pv1" }) {
         <>
           {/* Backdrop */}
           <div
-            className="fixed inset-0 bg-black/50 backdrop-blur-[2px] z-40"
+            className="fixed inset-0 bg-black/60 z-40"
             onClick={() => setCartOpen(false)}
           />
           {/* Panel */}
@@ -1500,7 +1995,7 @@ export default function Ventas({ location = "pv1" }) {
 
             <div className="p-4 overflow-y-auto flex-1 space-y-4">
               {/* Pago / Recargo / Descuento */}
-              <div className="rounded-2xl border border-white/10 p-3 bg-white/5">
+              <div className="rounded-2xl border border-slate-700 p-3 bg-[#0E2330]">
                 <p className="text-xs text-white/70 mb-1.5">Medio de pago</p>
                 <select
                   value={paymentMethod}
@@ -1820,6 +2315,87 @@ export default function Ventas({ location = "pv1" }) {
         </>
       )}
 
+      {hasPaymentQueue && (
+        <button
+          type="button"
+          onClick={() => setPaymentQueueOpen(true)}
+          className={`${floatingRailClass} bottom-[calc(env(safe-area-inset-bottom,0px)+72px)] rounded-2xl border border-sky-400/20 bg-[#112C3E]/95 px-3.5 py-2.5 text-left shadow-[0_14px_28px_rgba(0,0,0,0.28)] ring-1 ring-black/10 transition hover:-translate-y-0.5 hover:bg-[#17374D]`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-white/45">
+                Mercado Pago
+              </div>
+              <div className="mt-0.5 text-sm font-semibold">Cobros</div>
+            </div>
+            <span className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-100">
+              {mpVentasPending.length} pendientes
+            </span>
+          </div>
+          <div className="mt-2 text-[11px] text-white/55">
+            Ver pendientes y reconsultar pagos
+          </div>
+        </button>
+      )}
+
+      {paymentMonitor && !paymentMonitor.open && shouldShowMonitorShortcut && (
+        <button
+          type="button"
+          onClick={() =>
+            setPaymentMonitor((prev) => (prev ? { ...prev, open: true } : prev))
+          }
+          className={`${floatingRailClass} bottom-[calc(env(safe-area-inset-bottom,0px)+126px)] rounded-2xl border border-white/10 bg-[#112C3E]/95 px-3.5 py-2.5 text-left shadow-[0_14px_28px_rgba(0,0,0,0.28)] ring-1 ring-black/10 transition hover:-translate-y-0.5 hover:bg-[#17374D]`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-white/45">
+                Cobro actual
+              </div>
+              <div className="mt-0.5 text-sm font-semibold">Seguimiento</div>
+            </div>
+            <StatusPill status={trackedMonitorStatus} />
+          </div>
+          <div className="mt-2 text-[11px] text-white/55">
+            {trackedMonitorStatus === "pending"
+              ? "Abrí para ver si ya pagó"
+              : "Abrí para revisar el resultado"}
+          </div>
+        </button>
+      )}
+
+      {paymentQueueOpen && (
+        <PaymentQueueModal
+          pending={mpVentasPending}
+          recent={mpVentasRecent}
+          onClose={() => setPaymentQueueOpen(false)}
+          onOpenVenta={openPaymentMonitor}
+          onCancelVenta={cancelMercadoPagoVenta}
+          onReconcileVenta={reconcileMercadoPagoVenta}
+          cancelingMonitorKey={cancelingMonitorKey}
+          reconcilingMonitorKey={reconcilingMonitorKey}
+        />
+      )}
+
+      {paymentMonitor?.open && (
+        <PaymentMonitorModal
+          venta={trackedVenta}
+          fallback={paymentMonitor}
+          onCancel={() => cancelMercadoPagoVenta(activeMonitorVenta)}
+          onReconcile={() => reconcileMercadoPagoVenta(activeMonitorVenta)}
+          canceling={
+            cancelingMonitorKey ===
+            `${paymentMonitor?.chunkDocId || ""}_${paymentMonitor?.ventaId || ""}`
+          }
+          reconciling={
+            reconcilingMonitorKey ===
+            `${paymentMonitor?.chunkDocId || ""}_${paymentMonitor?.ventaId || ""}`
+          }
+          onClose={() =>
+            setPaymentMonitor((prev) => (prev ? { ...prev, open: false } : prev))
+          }
+        />
+      )}
+
       <style jsx global>{`
         .inp {
           background: #0c212d;
@@ -1881,13 +2457,572 @@ function Row({ label, value }) {
   );
 }
 
+function MiniStat({ label, value, tone = "white" }) {
+  const toneClass =
+    tone === "sky"
+      ? "border-sky-400/20 bg-sky-500/10 text-sky-100"
+      : "border-white/10 bg-white/5 text-white";
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${toneClass}`}>
+      <div className="text-[10px] uppercase tracking-[0.16em] text-white/45">
+        {label}
+      </div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function PaymentQueueRow({
+  venta,
+  onOpen,
+  onCancel,
+  onReconcile,
+  canceling = false,
+  reconciling = false,
+  compact = false,
+}) {
+  const status = getVentaMonitorStatus(venta);
+  const payment = getLatestPaymentEntry(venta);
+  const total = Number(venta?.totals?.total ?? 0);
+  const updatedLabel = timestampLabel(
+    payment?.updatedAt || venta?.paidAt || venta?.createdAt,
+  );
+  const canReconcile = !!(payment?.orderId || venta?.payment?.orderId);
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusPill status={status} />
+            <span className="text-sm text-white/45">{venta?.id || "—"}</span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+            <span className="font-medium">{money(total)}</span>
+            <span className="text-white/60">
+              {Array.isArray(venta?.lines) ? venta.lines.length : 0} ítems
+            </span>
+            <span className="text-white/50">{updatedLabel}</span>
+          </div>
+          {!compact && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/50">
+              <span>Order: {payment?.orderId || venta?.payment?.orderId || "—"}</span>
+              <span>Payment: {payment?.paymentId || "—"}</span>
+              <span className="truncate">
+                {payment?.statusDetail || venta?.payment?.statusDetail || "Sin detalle"}
+              </span>
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {canReconcile && typeof onReconcile === "function" && (
+            <button
+              type="button"
+              onClick={onReconcile}
+              disabled={reconciling}
+              className={`rounded-xl px-3 py-2 text-sm ${
+                reconciling
+                  ? "cursor-wait bg-sky-500/10 text-sky-100"
+                  : "bg-sky-500/15 text-sky-100 hover:bg-sky-500/25"
+              }`}
+            >
+              {reconciling ? "Consultando..." : "Reconsultar"}
+            </button>
+          )}
+          {status === "pending" && typeof onCancel === "function" && (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={canceling}
+              className={`rounded-xl px-3 py-2 text-sm ${
+                canceling
+                  ? "cursor-wait bg-red-500/10 text-red-100"
+                  : "bg-red-500/15 text-red-100 hover:bg-red-500/25"
+              }`}
+            >
+              {canceling ? "Cancelando..." : "Cancelar"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpen}
+            className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+          >
+            Ver seguimiento
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaymentQueueModal({
+  pending,
+  recent,
+  onClose,
+  onOpenVenta,
+  onCancelVenta,
+  onReconcileVenta,
+  cancelingMonitorKey = "",
+  reconcilingMonitorKey = "",
+}) {
+  const { modalRef, handleBackdropMouseDown } = useDismissibleModal(
+    true,
+    onClose,
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-[58] flex items-center justify-center p-3 sm:p-4"
+      onMouseDown={handleBackdropMouseDown}
+    >
+      <div className="absolute inset-0 bg-black/70" />
+      <div
+        ref={modalRef}
+        className="relative z-10 flex max-h-[min(92vh,860px)] w-full max-w-4xl flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#112C3E] shadow-[0_28px_70px_rgba(0,0,0,0.45)]"
+      >
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/10 p-4 sm:p-6">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-white/45">
+              Mercado Pago
+            </p>
+            <h3 className="mt-1 text-xl font-semibold">Cobros en curso</h3>
+            <p className="mt-1 text-sm text-white/60">
+              Revisá qué cobros siguen esperando pago y cuáles ya se resolvieron.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div className="overflow-y-auto p-4 sm:p-6">
+          <div className="grid gap-4 sm:grid-cols-[1.15fr_0.85fr]">
+          <div className="rounded-2xl border border-white/10 bg-[#0C212D] p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Pendientes</div>
+                <div className="text-xs text-white/45">
+                  Esperando confirmacion del cliente
+                </div>
+              </div>
+              <MiniStat label="Pendientes" value={String(pending.length)} tone="sky" />
+            </div>
+
+            {pending.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-sm text-white/50">
+                No hay ventas pendientes en este momento.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {pending.slice(0, 8).map((venta) => (
+                  <PaymentQueueRow
+                    key={`${venta.chunkDoc}_${venta.id}`}
+                    venta={venta}
+                    onCancel={() => onCancelVenta?.(venta)}
+                    onReconcile={() => onReconcileVenta?.(venta)}
+                    canceling={
+                      cancelingMonitorKey === `${venta.chunkDoc || ""}_${venta.id || ""}`
+                    }
+                    reconciling={
+                      reconcilingMonitorKey === `${venta.chunkDoc || ""}_${venta.id || ""}`
+                    }
+                    onOpen={() => onOpenVenta(venta)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-[#0C212D] p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="font-medium">Ultimas resueltas</div>
+                <div className="text-xs text-white/45">
+                  Aprobadas o cerradas recientemente
+                </div>
+              </div>
+              <MiniStat label="Recientes" value={String(recent.length)} />
+            </div>
+
+            {recent.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-sm text-white/50">
+                Todavia no hay cobros resueltos para mostrar.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {recent.map((venta) => (
+                  <PaymentQueueRow
+                    key={`${venta.chunkDoc}_${venta.id}`}
+                    venta={venta}
+                    compact
+                    onReconcile={() => onReconcileVenta?.(venta)}
+                    reconciling={
+                      reconcilingMonitorKey === `${venta.chunkDoc || ""}_${venta.id || ""}`
+                    }
+                    onOpen={() => onOpenVenta(venta)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusPill({ status }) {
+  const meta = getPaymentMonitorMeta(status);
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${meta.pillClass}`}
+    >
+      {meta.shortLabel}
+    </span>
+  );
+}
+
+function PaymentMonitorModal({
+  venta,
+  fallback,
+  onCancel,
+  onReconcile,
+  canceling = false,
+  reconciling = false,
+  onClose,
+}) {
+  const { modalRef, handleBackdropMouseDown } = useDismissibleModal(
+    true,
+    onClose,
+  );
+  const status = getVentaMonitorStatus(venta || fallback);
+  const meta = getPaymentMonitorMeta(status);
+  const payment = getLatestPaymentEntry(venta || fallback);
+  const total = Number(venta?.totals?.total ?? fallback?.total ?? 0);
+  const itemCount = Number(venta?.lines?.length ?? fallback?.itemCount ?? 0);
+  const saleLabel = venta?.id || fallback?.ventaId || "—";
+  const locationLabel =
+    String(venta?.location || fallback?.location || "")
+      .toUpperCase()
+      .replace("PV", "PV ") || "—";
+  const updatedAt = payment?.updatedAt || venta?.paidAt || venta?.createdAt || null;
+  const orderId =
+    payment?.orderId || venta?.payment?.orderId || fallback?.orderId || "—";
+  const paymentId = payment?.paymentId || fallback?.paymentId || "—";
+  const canCancel = status === "pending" && orderId && orderId !== "—";
+  const canReconcile = orderId && orderId !== "—";
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4"
+      onMouseDown={handleBackdropMouseDown}
+    >
+      <div className="absolute inset-0 bg-black/70" />
+      <div
+        ref={modalRef}
+        className="relative z-10 flex max-h-[min(92vh,860px)] w-full max-w-xl flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#112C3E] shadow-[0_28px_70px_rgba(0,0,0,0.45)]"
+      >
+        <div className={`h-1.5 w-full shrink-0 ${meta.barClass}`} />
+        <div className="overflow-y-auto">
+          <div className="p-4 sm:p-6">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-white/45">
+                Cobro presencial
+              </p>
+              <h3 className="mt-1 text-xl font-semibold">Mercado Pago</h3>
+              <p className="mt-2 text-sm text-white/60">
+                Seguimiento del cobro cargado al QR del local.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              {canReconcile && (
+                <button
+                  type="button"
+                  onClick={onReconcile}
+                  disabled={reconciling}
+                  className={`rounded-xl px-3 py-1.5 text-sm ${
+                    reconciling
+                      ? "cursor-wait bg-sky-500/10 text-sky-100"
+                      : "bg-sky-500/15 text-sky-100 hover:bg-sky-500/25"
+                  }`}
+                >
+                  {reconciling ? "Consultando..." : "Reconsultar pago"}
+                </button>
+              )}
+              {canCancel && (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  disabled={canceling}
+                  className={`rounded-xl px-3 py-1.5 text-sm ${
+                    canceling
+                      ? "cursor-wait bg-red-500/10 text-red-100"
+                      : "bg-red-500/15 text-red-100 hover:bg-red-500/25"
+                  }`}
+                >
+                  {canceling ? "Cancelando..." : "Cancelar venta"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-white/10 bg-[#0C212D] p-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusPill status={status} />
+              <div className="text-sm text-white/60">
+                Venta <span className="font-medium text-white">{saleLabel}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-start gap-3">
+              <div className={`mt-1 h-3 w-3 rounded-full ${meta.dotClass}`} />
+              <div>
+                <div className="font-medium">{meta.title}</div>
+                <p className="mt-1 text-sm text-white/65">{meta.description}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <InfoTile label="Total" value={money(total)} />
+            <InfoTile label="Ítems" value={String(itemCount)} />
+            <InfoTile label="Sede" value={locationLabel} />
+            <InfoTile
+              label="Último cambio"
+              value={timestampLabel(updatedAt)}
+            />
+          </div>
+
+          <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <InfoRow
+                label="Estado pago"
+                value={
+                  payment?.status ||
+                  venta?.payment?.status ||
+                  fallback?.paymentStatus ||
+                  "pending"
+                }
+              />
+              <InfoRow label="Order ID" value={orderId} />
+              <InfoRow label="Payment ID" value={paymentId} />
+              <InfoRow label="Detalle" value={payment?.statusDetail || venta?.payment?.statusDetail || "—"} />
+            </div>
+          </div>
+
+          {Array.isArray(venta?.lines) && venta.lines.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="font-medium">Detalle del pedido</div>
+                <div className="text-xs text-white/45">
+                  {venta.lines.length} productos cargados al cobro
+                </div>
+              </div>
+              <div className="space-y-2">
+                {venta.lines.map((line, index) => (
+                  <div
+                    key={`${line?.productId || line?.sku || "line"}_${index}`}
+                    className="flex items-center justify-between gap-3 rounded-xl bg-black/10 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">
+                        {line?.name || "Producto"}
+                      </div>
+                      <div className="text-xs text-white/50">
+                        {line?.sku || line?.productId || "Sin código"}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right text-sm">
+                      <div>{line?.qty || 0} x {money(Number(line?.unitPrice || 0))}</div>
+                      <div className="text-xs text-white/55">
+                        {money(Number(line?.subtotal || 0))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(status === "preparing" || status === "pending") && (
+            <div className="mt-4 rounded-2xl border border-sky-400/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-50">
+              {status === "preparing"
+                ? "La venta ya está cerrada. Estamos cargando el cobro en Mercado Pago para dejar listo el QR."
+                : "Pedile al cliente que escanee el QR físico del local. Este panel se actualiza solo cuando Mercado Pago confirma el pago."}
+            </div>
+          )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoTile({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="text-[11px] uppercase tracking-[0.18em] text-white/45">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-black/10 px-3 py-2">
+      <span className="text-sm text-white/60">{label}</span>
+      <span className="max-w-[55%] truncate text-sm">{value}</span>
+    </div>
+  );
+}
+
 /* helpers data */
+function getVentaUpdatedMs(venta) {
+  const payment = getLatestPaymentEntry(venta);
+  const ts = payment?.updatedAt || venta?.paidAt || venta?.createdAt || null;
+  if (!ts) return 0;
+  if (typeof ts?.toDate === "function") return ts.toDate().getTime();
+  if (typeof ts?.seconds === "number") return ts.seconds * 1000;
+  return 0;
+}
+function getLatestPaymentEntry(venta) {
+  const payments = Array.isArray(venta?.payments) ? venta.payments : [];
+  return payments.length > 0 ? payments[payments.length - 1] : null;
+}
+function getVentaMonitorStatus(venta) {
+  const payment = getLatestPaymentEntry(venta);
+  const paymentStatus = String(
+    payment?.status || venta?.payment?.status || "",
+  ).toLowerCase();
+  const saleStatus = String(venta?.status || "").toLowerCase();
+
+  if (paymentStatus === "preparing" || saleStatus === "payment_preparing")
+    return "preparing";
+  if (paymentStatus === "approved" || saleStatus === "paid") return "approved";
+  if (paymentStatus === "expired" || saleStatus === "payment_expired")
+    return "expired";
+  if (paymentStatus === "canceled" || saleStatus === "payment_canceled")
+    return "canceled";
+  if (paymentStatus === "rejected" || saleStatus === "payment_rejected")
+    return "rejected";
+  if (paymentStatus === "error" || saleStatus === "payment_error")
+    return "error";
+  return "pending";
+}
+function getPaymentMonitorMeta(status) {
+  switch (status) {
+    case "preparing":
+      return {
+        shortLabel: "Preparando",
+        title: "Preparando cobro",
+        description:
+          "La venta ya se confirmó. El sistema está terminando de cargar el cobro en Mercado Pago.",
+        pillClass: "border-indigo-400/30 bg-indigo-500/15 text-indigo-100",
+        dotClass: "animate-pulse bg-indigo-300",
+        barClass: "bg-gradient-to-r from-indigo-400 to-sky-400",
+      };
+    case "approved":
+      return {
+        shortLabel: "Aprobado",
+        title: "Pago confirmado",
+        description:
+          "Mercado Pago ya confirmó la cobranza y la venta quedó registrada como pagada.",
+        pillClass: "border-emerald-400/30 bg-emerald-500/15 text-emerald-100",
+        dotClass: "bg-emerald-400",
+        barClass: "bg-gradient-to-r from-emerald-400 to-emerald-500",
+      };
+    case "expired":
+      return {
+        shortLabel: "Vencido",
+        title: "La orden venció",
+        description:
+          "El cliente no pagó a tiempo. El sistema debería liberar la reserva de stock automáticamente.",
+        pillClass: "border-amber-400/30 bg-amber-500/15 text-amber-100",
+        dotClass: "bg-amber-300",
+        barClass: "bg-gradient-to-r from-amber-300 to-amber-500",
+      };
+    case "canceled":
+      return {
+        shortLabel: "Cancelado",
+        title: "Cobro cancelado",
+        description:
+          "Mercado Pago informó que la orden fue cancelada. La venta quedó guardada solo como intento.",
+        pillClass: "border-orange-400/30 bg-orange-500/15 text-orange-100",
+        dotClass: "bg-orange-300",
+        barClass: "bg-gradient-to-r from-orange-300 to-orange-500",
+      };
+    case "rejected":
+      return {
+        shortLabel: "Rechazado",
+        title: "Pago rechazado",
+        description:
+          "El intento de cobro fue rechazado. Podés volver a intentar desde una nueva venta si hace falta.",
+        pillClass: "border-rose-400/30 bg-rose-500/15 text-rose-100",
+        dotClass: "bg-rose-300",
+        barClass: "bg-gradient-to-r from-rose-300 to-rose-500",
+      };
+    case "error":
+      return {
+        shortLabel: "Error",
+        title: "Error al cargar el cobro",
+        description:
+          "La venta se guardó, pero la orden de Mercado Pago no terminó de cargarse correctamente.",
+        pillClass: "border-red-400/30 bg-red-500/15 text-red-100",
+        dotClass: "bg-red-300",
+        barClass: "bg-gradient-to-r from-red-400 to-red-500",
+      };
+    default:
+      return {
+        shortLabel: "Esperando",
+        title: "Esperando pago del cliente",
+        description:
+          "La venta ya fue enviada a Mercado Pago. Queda pendiente hasta que el cliente complete el pago desde el QR.",
+        pillClass: "border-sky-400/30 bg-sky-500/15 text-sky-100",
+        dotClass: "animate-pulse bg-sky-300",
+        barClass: "bg-gradient-to-r from-sky-400 to-cyan-400",
+      };
+  }
+}
 function finalPrice(p) {
   return p.discountActive && p.priceDiscount > 0 ? p.priceDiscount : p.price;
 }
 function money(n) {
   if (typeof n !== "number" || isNaN(n)) return "-";
   return n.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
+}
+function timestampLabel(ts) {
+  if (!ts) return "—";
+  if (typeof ts?.toDate === "function") {
+    return ts.toDate().toLocaleString("es-AR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+  }
+  if (typeof ts?.seconds === "number") {
+    return new Date(ts.seconds * 1000).toLocaleString("es-AR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+  }
+  return "—";
 }
 function esc(s) {
   return String(s == null ? "" : s)

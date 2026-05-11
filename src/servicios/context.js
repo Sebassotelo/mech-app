@@ -1,7 +1,7 @@
 // src/servicios/Context.jsx
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import ContextGeneral from "./contextGeneral";
 import firebaseApp from "./firebase";
 
@@ -16,16 +16,66 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 
-const PERMISOS_POR_DEFECTO = [1];
-const PERMISOS_SEMILLA = {
-  "saabtian@gmail.com": [1, 2, 3, 4],
-};
+const PERMISOS_POR_DEFECTO = [];
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function syncUsuarioDoc(firestore, usuarioFirebase) {
+  if (!firestore || !usuarioFirebase?.email) return null;
+
+  const rawEmail = String(usuarioFirebase.email || "").trim();
+  const email = normalizeEmail(rawEmail);
+  if (!email) return null;
+
+  const normalizedRef = doc(firestore, "usuarios", email);
+  const legacyRef =
+    rawEmail && rawEmail !== email ? doc(firestore, "usuarios", rawEmail) : null;
+
+  try {
+    const [normalizedSnap, legacySnap] = await Promise.all([
+      getDoc(normalizedRef),
+      legacyRef ? getDoc(legacyRef) : Promise.resolve(null),
+    ]);
+
+    const existingData = normalizedSnap.exists()
+      ? normalizedSnap.data() || {}
+      : legacySnap?.exists()
+        ? legacySnap.data() || {}
+        : {};
+
+    const payload = {
+      email,
+      uid: usuarioFirebase.uid,
+      displayName: usuarioFirebase.displayName || existingData.displayName || "",
+      photoURL: usuarioFirebase.photoURL || existingData.photoURL || "",
+      permisos: Array.isArray(existingData.permisos)
+        ? existingData.permisos
+        : PERMISOS_POR_DEFECTO,
+      activo:
+        typeof existingData.activo === "boolean" ? existingData.activo : false,
+      lastLogin: serverTimestamp(),
+    };
+
+    if (!normalizedSnap.exists()) {
+      payload.createdAt = existingData.createdAt || serverTimestamp();
+    }
+
+    await setDoc(normalizedRef, payload, { merge: true });
+    return email;
+  } catch (err) {
+    console.error("Error verificando usuario:", err);
+    return null;
+  }
+}
 
 function Context(props) {
   const [loader, setLoader] = useState(true);
   const [user, setUser] = useState(null);
   const [user1, setUser1] = useState(null);
   const [permisos, setPermisos] = useState([]);
+  const [userActivo, setUserActivo] = useState(null);
 
   const [categorias, setCategorias] = useState([]);
   const [productos, setProductos] = useState([]);
@@ -136,33 +186,56 @@ function Context(props) {
   // ==========================
   // Crear o actualizar usuario
   // ==========================
-  async function ensureUserExists(usuarioFirebase) {
+  const ensureUserExists = useCallback(async (usuarioFirebase) => {
     if (!firestore || !usuarioFirebase?.email) return;
-    const email = usuarioFirebase.email;
+    const rawEmail = String(usuarioFirebase.email || "").trim();
+    const email = normalizeEmail(rawEmail);
     try {
       const ref = doc(firestore, "usuarios", email);
-      const snap = await getDoc(ref);
+      const legacyRef =
+        rawEmail && rawEmail !== email ? doc(firestore, "usuarios", rawEmail) : null;
+      const [snap, legacySnap] = await Promise.all([
+        getDoc(ref),
+        legacyRef ? getDoc(legacyRef) : Promise.resolve(null),
+      ]);
+      const existingData = snap.exists()
+        ? snap.data() || {}
+        : legacySnap?.exists()
+          ? legacySnap.data() || {}
+          : {};
       if (!snap.exists()) {
-        const permisosInicial = PERMISOS_SEMILLA[email] ?? PERMISOS_POR_DEFECTO;
-
         await setDoc(ref, {
           email,
           uid: usuarioFirebase.uid,
-          displayName: usuarioFirebase.displayName || "",
-          photoURL: usuarioFirebase.photoURL || "",
-          permisos: permisosInicial,
-          activo: true,
-          createdAt: serverTimestamp(),
+          displayName: usuarioFirebase.displayName || existingData.displayName || "",
+          photoURL: usuarioFirebase.photoURL || existingData.photoURL || "",
+          permisos: Array.isArray(existingData.permisos)
+            ? existingData.permisos
+            : PERMISOS_POR_DEFECTO,
+          activo:
+            typeof existingData.activo === "boolean" ? existingData.activo : false,
+          createdAt: existingData.createdAt || serverTimestamp(),
           lastLogin: serverTimestamp(),
         });
         console.log("✅ Usuario creado:", email);
       } else {
-        await setDoc(ref, { lastLogin: serverTimestamp() }, { merge: true });
+        await setDoc(
+          ref,
+          {
+            email,
+            uid: usuarioFirebase.uid,
+            displayName:
+              usuarioFirebase.displayName || existingData.displayName || "",
+            photoURL: usuarioFirebase.photoURL || existingData.photoURL || "",
+            lastLogin: serverTimestamp(),
+          },
+          { merge: true },
+        );
       }
     } catch (err) {
       console.error("Error verificando usuario:", err);
     }
-  }
+  }, [firestore]);
 
   // ==========================
   // Manejo de sesión
@@ -179,20 +252,28 @@ function Context(props) {
       if (usuarioFirebase) {
         setUser(usuarioFirebase);
         setUser1(usuarioFirebase);
+        setUserActivo(null);
         await ensureUserExists(usuarioFirebase);
 
-        const uref = doc(firestore, "usuarios", usuarioFirebase.email);
+        const uref = doc(
+          firestore,
+          "usuarios",
+          normalizeEmail(usuarioFirebase.email),
+        );
         const unsubDoc = onSnapshot(
           uref,
           (snap) => {
             const data = snap.data() || {};
+            const isActive = data?.activo === true;
             const p = Array.isArray(data.permisos)
               ? data.permisos.filter((n) => [1, 2, 3, 4].includes(n))
               : [];
-            setPermisos(p);
+            setUserActivo(isActive);
+            setPermisos(isActive ? p : []);
           },
           (err) => {
             console.error("onSnapshot(usuarios):", err);
+            setUserActivo(false);
             setPermisos([]);
           },
         );
@@ -200,6 +281,7 @@ function Context(props) {
       } else {
         setUser(null);
         setUser1(null);
+        setUserActivo(null);
         setPermisos([]);
         setLoader(false);
       }
@@ -214,7 +296,7 @@ function Context(props) {
         userDocUnsubRef.current = null;
       }
     };
-  }, [auth, firestore]);
+  }, [auth, firestore, ensureUserExists]);
 
   // ==========================
   // RT de colecciones
@@ -222,7 +304,30 @@ function Context(props) {
   const unsubsRef = useRef([]);
 
   useEffect(() => {
-    if (!firestore || !user) return;
+    if (user && userActivo === null) {
+      setLoader(true);
+      return;
+    }
+
+    const hasPanelAccess = Array.isArray(permisos) && permisos.length > 0;
+
+    if (!firestore || !user || userActivo !== true || !hasPanelAccess) {
+      setCategorias([]);
+      setProductos([]);
+      setVentas([]);
+      setEgresos([]);
+      setPresupuestos([]);
+      setPresupuestosLoading(false);
+      setPresupuestosTaller([]);
+      setPresupuestosTallerLoading(false);
+      setEquivalenciasDocs([]);
+      setEquivalenciasMap({});
+      setEquivalenciasLoading(false);
+      setClientesTaller([]);
+      setTrabajosTaller([]);
+      setLoader(false);
+      return;
+    }
 
     unsubsRef.current.forEach((u) => {
       try {
@@ -518,7 +623,7 @@ function Context(props) {
       });
       unsubsRef.current = [];
     };
-  }, [firestore, user]);
+  }, [firestore, user, userActivo, permisos]);
 
   return (
     <ContextGeneral.Provider
@@ -528,6 +633,7 @@ function Context(props) {
         user,
         user1,
         permisos,
+        userActivo,
         loader,
         setLoader,
         categorias,

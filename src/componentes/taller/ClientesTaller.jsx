@@ -1,5 +1,7 @@
 import { useState, useContext, useMemo } from "react";
 import ContextGeneral from "@/servicios/contextGeneral";
+import useDismissibleModal from "@/hooks/useDismissibleModal";
+import HelpHint from "@/componentes/HelpHint";
 import {
   collection,
   doc,
@@ -81,6 +83,18 @@ export default function ClientesTaller() {
     setSelectedOrdenDetail(null);
     setSelectedClient(null);
   };
+  const detailClientModal = useDismissibleModal(
+    showDetailModal && !!selectedClient,
+    cerrarModales,
+  );
+  const orderDetailModal = useDismissibleModal(
+    !!selectedOrdenDetail,
+    () => setSelectedOrdenDetail(null),
+  );
+  const formClientModal = useDismissibleModal(
+    showFormModal,
+    () => (selectedClient ? verDetalle(selectedClient) : cerrarModales()),
+  );
 
   // --- MANEJO DEL FORMULARIO ---
 
@@ -184,6 +198,20 @@ export default function ClientesTaller() {
   };
 
   const eliminarCliente = async (id, chunkDoc) => {
+    const trabajosVinculados = (ctx.trabajosTaller || []).filter(
+      (t) => t.clienteId === id,
+    );
+    const presupuestosVinculados = (ctx.presupuestosTaller || []).filter(
+      (p) => p.clienteId === id,
+    );
+
+    if (trabajosVinculados.length > 0 || presupuestosVinculados.length > 0) {
+      toast.error(
+        `No se puede eliminar el cliente porque tiene ${trabajosVinculados.length} trabajo(s) y ${presupuestosVinculados.length} presupuesto(s) vinculados.`,
+      );
+      return;
+    }
+
     if (
       !window.confirm(
         "¿Seguro que querés eliminar a este cliente permanentemente?",
@@ -251,9 +279,37 @@ export default function ClientesTaller() {
       {/* Encabezado Lista */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between border-b border-white/10 mb-6 pb-4 gap-4">
         <div>
-          <h3 className="text-xl font-semibold text-white tracking-tight">
-            Directorio de Clientes
-          </h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-xl font-semibold text-white tracking-tight">
+              Directorio de Clientes
+            </h3>
+            <HelpHint
+              title="Clientes del taller"
+              description="Esta vista concentra la ficha básica de cada cliente y sus vehículos."
+              sections={[
+                {
+                  label: "Qué es",
+                  value:
+                    "Es la base interna de clientes del taller.",
+                },
+                {
+                  label: "Qué hace",
+                  value:
+                    "Permite registrar teléfonos, vehículos, abrir el perfil del cliente y revisar trabajos vinculados.",
+                },
+                {
+                  label: "Quién lo ve",
+                  value:
+                    "La ven usuarios del taller con permiso y el admin general.",
+                },
+                {
+                  label: "Uso interno",
+                  value:
+                    "Sí. Se usa para seguimiento y contacto operativo del negocio.",
+                },
+              ]}
+            />
+          </div>
           <p className="text-sm text-white/50 mt-1">
             Total registrados: {ctx.clientesTaller?.length || 0}
           </p>
@@ -362,8 +418,14 @@ export default function ClientesTaller() {
       {/* MODAL: DETALLE DEL CLIENTE */}
       {/* ========================================== */}
       {showDetailModal && selectedClient && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-          <div className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+          onMouseDown={detailClientModal.handleBackdropMouseDown}
+        >
+          <div
+            ref={detailClientModal.modalRef}
+            className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
             {/* Header Modal Detalle */}
             <div className="shrink-0 bg-[#0C212D]/95 backdrop-blur border-b border-white/10 p-6 flex items-start sm:items-center justify-between flex-col sm:flex-row gap-4 rounded-t-3xl z-10">
               <div>
@@ -568,8 +630,14 @@ export default function ClientesTaller() {
       {/* MODAL: VER DETALLE ESPECIFICO DE ORDEN (Desde el perfil) */}
       {/* ========================================== */}
       {selectedOrdenDetail && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-2xl flex flex-col max-h-[85vh] shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+          onMouseDown={orderDetailModal.handleBackdropMouseDown}
+        >
+          <div
+            ref={orderDetailModal.modalRef}
+            className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-2xl flex flex-col max-h-[85vh] shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
             <div className="p-5 border-b border-white/10 bg-[#112C3E] rounded-t-3xl flex justify-between items-center shrink-0">
               <div>
                 <h4 className="text-white font-bold">Bitácora de Orden</h4>
@@ -675,8 +743,14 @@ export default function ClientesTaller() {
       {/* MODAL: FORMULARIO (NUEVO / EDITAR CLIENTE) */}
       {/* ========================================== */}
       {showFormModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-          <div className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+          onMouseDown={formClientModal.handleBackdropMouseDown}
+        >
+          <div
+            ref={formClientModal.modalRef}
+            className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
             <div className="p-6 border-b border-white/10 bg-[#0C212D]/95 backdrop-blur flex items-center justify-between sticky top-0 z-10">
               <div>
                 <h3 className="text-xl font-bold text-white tracking-tight">

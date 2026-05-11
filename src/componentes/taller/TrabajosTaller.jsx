@@ -1,5 +1,7 @@
 import { useState, useContext, useRef, useEffect } from "react";
 import ContextGeneral from "@/servicios/contextGeneral";
+import useDismissibleModal from "@/hooks/useDismissibleModal";
+import HelpHint from "@/componentes/HelpHint";
 import {
   collection,
   doc,
@@ -176,6 +178,11 @@ export default function TrabajosTaller() {
       setShowModalForm(false);
     }
   };
+  const detailTrabajoModal = useDismissibleModal(
+    !!selectedTrabajoDetail,
+    () => setSelectedTrabajoDetail(null),
+  );
+  const formTrabajoModal = useDismissibleModal(showModalForm, cerrarModalForm);
 
   const guardarTrabajo = async (e) => {
     e.preventDefault();
@@ -379,6 +386,31 @@ export default function TrabajosTaller() {
     return t.mecanico || "Sin asignar";
   };
 
+  const enviarWhatsAppTrabajo = (trabajo) => {
+    const cliente = clientes.find((c) => c.id === trabajo.clienteId);
+    let telefono = cliente?.telefono || "";
+
+    if (!telefono) {
+      telefono = window.prompt(
+        "El cliente no tiene teléfono registrado. Ingresalo para enviar el WhatsApp:",
+      );
+      if (!telefono) return;
+    }
+
+    telefono = telefono.replace(/[\s-]/g, "");
+
+    let msj = `¡Hola *${trabajo.clienteNombre || "cliente"}*!\n`;
+    msj += `Te avisamos que el trabajo de tu vehículo *${trabajo.vehiculo || "sin referencia"}* ya está finalizado.\n\n`;
+    msj += `*Trabajo realizado:*\n${trabajo.descripcion || "Sin descripción"}\n`;
+    msj += `\nCuando quieras, podés comunicarte con nosotros para coordinar el retiro o cualquier consulta.\n`;
+    msj += `\n¡Gracias!`;
+
+    window.open(
+      `https://wa.me/${telefono}?text=${encodeURIComponent(msj)}`,
+      "_blank",
+    );
+  };
+
   const renderColumna = (titulo, colorClass, borderClass, arrayTrabajos) => (
     <div className="bg-[#112C3E] rounded-2xl p-5 border border-white/10 flex flex-col h-[70vh] shadow-xl">
       <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
@@ -479,6 +511,16 @@ export default function TrabajosTaller() {
                   <span className="text-xs text-white/40 flex items-center gap-1 bg-white/5 px-2 py-1.5 rounded-lg whitespace-nowrap">
                     💬 {t.comentarios?.length || 0}
                   </span>
+                  {t.estado === "Terminado" && (
+                    <button
+                      type="button"
+                      onClick={() => enviarWhatsAppTrabajo(t)}
+                      className="shrink-0 bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366]/20 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition border border-[#25D366]/30"
+                      title="Avisar por WhatsApp"
+                    >
+                      WhatsApp
+                    </button>
+                  )}
                   <select
                     value={t.estado}
                     onChange={(e) =>
@@ -503,9 +545,37 @@ export default function TrabajosTaller() {
     <div className="animate-in fade-in duration-200">
       <div className="flex items-center justify-between mb-6 pb-4 border-b border-white/10">
         <div>
-          <h3 className="text-xl font-semibold text-white tracking-tight">
-            Tablero Kanban
-          </h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-xl font-semibold text-white tracking-tight">
+              Tablero Kanban
+            </h3>
+            <HelpHint
+              title="Órdenes de trabajo"
+              description="Este tablero organiza los trabajos del taller según su estado actual."
+              sections={[
+                {
+                  label: "Qué es",
+                  value:
+                    "Es el panel interno donde se ven y gestionan las órdenes de trabajo.",
+                },
+                {
+                  label: "Qué hace",
+                  value:
+                    "Permite crear órdenes, asignar mecánicos, mover estados, usar checklist y dejar comentarios.",
+                },
+                {
+                  label: "Quién lo ve",
+                  value:
+                    "Lo ve el equipo del taller con permiso y el admin general.",
+                },
+                {
+                  label: "Uso interno",
+                  value:
+                    "Sí. Sirve para coordinar el trabajo diario y el seguimiento del taller.",
+                },
+              ]}
+            />
+          </div>
           <p className="text-sm text-white/50 mt-1">
             Gestión de órdenes y tareas del taller.
           </p>
@@ -543,8 +613,14 @@ export default function TrabajosTaller() {
       {/* MODAL: VER DETALLES Y COMENTARIOS (ADMIN) */}
       {/* ========================================================= */}
       {selectedTrabajoDetail && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-          <div className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+          onMouseDown={detailTrabajoModal.handleBackdropMouseDown}
+        >
+          <div
+            ref={detailTrabajoModal.modalRef}
+            className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
             <div className="flex items-center justify-between p-6 border-b border-white/10 bg-[#112C3E] rounded-t-3xl shrink-0">
               <div>
                 <h3 className="text-xl font-bold text-white tracking-tight">
@@ -556,6 +632,14 @@ export default function TrabajosTaller() {
                 </p>
               </div>
               <div className="flex gap-2">
+                {selectedTrabajoDetail.estado === "Terminado" && (
+                  <button
+                    onClick={() => enviarWhatsAppTrabajo(selectedTrabajoDetail)}
+                    className="bg-[#25D366]/20 text-[#25D366] hover:bg-[#25D366]/30 px-4 py-2 rounded-xl text-sm font-semibold transition border border-[#25D366]/30"
+                  >
+                    Enviar WhatsApp
+                  </button>
+                )}
                 <button
                   onClick={() => abrirEditar(selectedTrabajoDetail)}
                   className="bg-white/10 hover:bg-white/20 text-white px-5 py-2 rounded-xl text-sm font-semibold transition"
@@ -720,7 +804,7 @@ export default function TrabajosTaller() {
               {/* Derecha: Comentarios (Toma 1 columna) */}
               <div className="lg:col-span-1 bg-[#112C3E] border border-white/5 p-5 rounded-2xl flex flex-col h-full">
                 <h4 className="text-xs uppercase tracking-widest text-white/50 font-bold mb-4 shrink-0 border-b border-white/10 pb-2">
-                  Bitácora / Mensajes
+                  Comentarios y mensajes
                 </h4>
                 <div className="space-y-3 flex-1 overflow-y-auto mb-4 pr-1">
                   {!selectedTrabajoDetail.comentarios ||
@@ -767,7 +851,7 @@ export default function TrabajosTaller() {
                     type="text"
                     value={nuevoComentario}
                     onChange={(e) => setNewComentario(e.target.value)}
-                    placeholder="Mensaje..."
+                    placeholder="Escribí un comentario o mensaje..."
                     className="flex-1 bg-[#0C212D] border border-white/10 text-white rounded-xl p-2.5 text-sm focus:outline-none focus:border-emerald-400 transition"
                   />
                   <button
@@ -788,8 +872,14 @@ export default function TrabajosTaller() {
       {/* MODAL: FORMULARIO (NUEVA ORDEN / EDITAR ORDEN) */}
       {/* ========================================================= */}
       {showModalForm && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-          <div className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-4xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+          onMouseDown={formTrabajoModal.handleBackdropMouseDown}
+        >
+          <div
+            ref={formTrabajoModal.modalRef}
+            className="bg-[#0C212D] border border-white/10 rounded-3xl w-full max-w-4xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"
+          >
             <div className="flex items-center justify-between p-6 border-b border-white/10 bg-[#0C212D]/95 shrink-0">
               <div>
                 <h3 className="text-xl font-bold text-white tracking-tight">

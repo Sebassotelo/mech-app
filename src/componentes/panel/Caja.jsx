@@ -4,6 +4,7 @@ import React, { useContext, useMemo, useState } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { toast } from "sonner";
 import ContextGeneral from "@/servicios/contextGeneral";
+import HelpHint from "@/componentes/HelpHint";
 
 /**
  * Caja
@@ -113,9 +114,42 @@ export default function Caja({ location }) {
     return em === currentEmail;
   }
 
+  function getLatestPaymentEntry(venta) {
+    const payments = Array.isArray(venta?.payments) ? venta.payments : [];
+    return payments.length > 0 ? payments[payments.length - 1] : null;
+  }
+
+  function isCanceledSale(v) {
+    const saleStatus = String(v?.status || v?.estado || "").toLowerCase();
+    return (
+      saleStatus.includes("anul") ||
+      saleStatus.includes("void") ||
+      v?.canceled === true ||
+      v?.anulada === true ||
+      v?.void === true
+    );
+  }
+
+  function isSettledSale(v) {
+    if (isCanceledSale(v)) return false;
+
+    const latestPayment = getLatestPaymentEntry(v);
+    const provider = String(
+      latestPayment?.provider || v?.payment?.provider || "",
+    ).toLowerCase();
+    if (provider !== "mercadopago") return true;
+
+    const paymentStatus = String(
+      latestPayment?.status || v?.payment?.status || "",
+    ).toLowerCase();
+    const saleStatus = String(v?.status || "").toLowerCase();
+    return paymentStatus === "approved" || saleStatus === "paid";
+  }
+
   // ====== Normalizar movimientos: Ventas ======
   const ventasMovs = useMemo(() => {
     return ventasCtx
+      .filter((v) => isSettledSale(v))
       .map((v) => {
         const date = tsToDate(v.createdAt);
         return {
@@ -282,9 +316,37 @@ export default function Caja({ location }) {
         <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between mb-3">
           <div>
             <p className="text-xs text-white/60">Caja del día (HOY)</p>
-            <h3 className="text-lg font-semibold text-white">
-              Saldo que debería haber en caja
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-semibold text-white">
+                Saldo que debería haber en caja
+              </h3>
+              <HelpHint
+                title="Caja del día"
+                description="Este bloque estima cuánto dinero debería haber hoy según los movimientos registrados."
+                sections={[
+                  {
+                    label: "Qué es",
+                    value:
+                      "Es un resumen interno del saldo esperado de caja por sede.",
+                  },
+                  {
+                    label: "Qué hace",
+                    value:
+                      "Toma las ventas cobradas y los egresos cargados para calcular el saldo del día.",
+                  },
+                  {
+                    label: "Quién lo ve",
+                    value:
+                      "Lo ven usuarios de la sede actual y el admin general.",
+                  },
+                  {
+                    label: "Uso interno",
+                    value:
+                      "Sí. Sirve para control operativo y arqueo de caja.",
+                  },
+                ]}
+              />
+            </div>
             <p className="text-[11px] text-white/50 mt-1">
               Calculado con todas las ventas y egresos de hoy por punto de
               venta.
@@ -337,9 +399,37 @@ export default function Caja({ location }) {
       <div className="rounded-2xl border border-white/10 bg-[#0C212D] p-4">
         <div className="flex items-center justify-between mb-3 gap-2">
           <div>
-            <h3 className="text-sm font-semibold text-white">
-              Registrar egreso de caja
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-white">
+                Registrar egreso de caja
+              </h3>
+              <HelpHint
+                title="Egreso de caja"
+                description="Este formulario registra un gasto pagado desde la caja física de la sede."
+                sections={[
+                  {
+                    label: "Qué es",
+                    value:
+                      "Es una carga manual para gastos o salidas de dinero.",
+                  },
+                  {
+                    label: "Qué hace",
+                    value:
+                      "Guarda el monto, el concepto, la sede y el usuario que lo registró.",
+                  },
+                  {
+                    label: "Quién lo ve",
+                    value:
+                      "Lo ven usuarios de la sede y el admin general en la caja y movimientos.",
+                  },
+                  {
+                    label: "Uso interno",
+                    value:
+                      "Sí. No reemplaza una venta; solo deja asentado un gasto del negocio.",
+                  },
+                ]}
+              />
+            </div>
             <p className="text-[11px] text-white/50">
               Carga gastos pagados desde la caja de{" "}
               {location === "pv1"

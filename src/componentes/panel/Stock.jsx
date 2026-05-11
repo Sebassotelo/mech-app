@@ -156,7 +156,7 @@ export default function Stock({ location = "pv1" }) {
     <div className="space-y-4 overflow-x-hidden max-w-full">
       {/* Aviso permisos */}
       {!canEdit && (
-        <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
+        <div className="rounded-xl border border-slate-700 bg-[#0E2330] p-3 text-sm text-white/80">
           Vista <b>solo lectura</b>. Solo el usuario con permiso{" "}
           <b>4 (Admin General)</b> puede editar stock y mínimos.
         </div>
@@ -270,7 +270,7 @@ export default function Stock({ location = "pv1" }) {
             return (
               <article
                 key={`${p.chunkDoc}_${p.id}`}
-                className={`rounded-xl border border-white/10 bg-white/5 p-3 ${
+                className={`rounded-xl border border-slate-700 bg-[#0E2330] p-3 ${
                   isLow ? "ring-1 ring-[#FF3816]/40" : ""
                 }`}
               >
@@ -300,7 +300,7 @@ export default function Stock({ location = "pv1" }) {
 
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   {/* PV1 */}
-                  <div className="bg-white/5 rounded-lg p-2 border border-white/10">
+                  <div className="bg-[#132836] rounded-lg p-2 border border-slate-700">
                     <div className="text-[11px] text-white/60">PV1</div>
                     <div className="mt-1 flex items-center gap-1">
                       <Btn
@@ -336,7 +336,7 @@ export default function Stock({ location = "pv1" }) {
                   </div>
 
                   {/* PV2 */}
-                  <div className="bg-white/5 rounded-lg p-2 border border-white/10">
+                  <div className="bg-[#132836] rounded-lg p-2 border border-slate-700">
                     <div className="text-[11px] text-white/60">PV2</div>
                     <div className="mt-1 flex items-center gap-1">
                       <Btn
@@ -372,7 +372,7 @@ export default function Stock({ location = "pv1" }) {
                   </div>
 
                   {/* Min */}
-                  <div className="bg-white/5 rounded-lg p-2 border border-white/10">
+                  <div className="bg-[#132836] rounded-lg p-2 border border-slate-700">
                     <div className="text-[11px] text-white/60">Mín.</div>
                     <input
                       value={
@@ -407,10 +407,10 @@ export default function Stock({ location = "pv1" }) {
       </div>
 
       {/* ===== TABLA (md+) ===== */}
-      <div className="hidden md:block rounded-2xl border border-white/10">
+      <div className="hidden md:block rounded-2xl border border-slate-700 bg-[#0E2330]">
         <div className="max-w-full overflow-x-auto overscroll-x-contain">
           <table className="w-full text-sm md:table-fixed">
-            <thead className="bg-white/5 text-white/70">
+            <thead className="bg-[#0A1B25] text-white/70">
               <tr>
                 <Th>SKU</Th>
                 <Th className="md:w-[28%]">Nombre</Th>
@@ -652,7 +652,7 @@ function Btn({ children, onClick, disabled, sm }) {
 }
 function Kpi({ title, value, tone }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-[#112C3E]/80 p-4 shadow">
+    <div className="rounded-2xl border border-slate-700 bg-[#0E2330] p-4 shadow">
       <div className="flex items-center justify-between">
         <h4 className="text-sm text-white/70">{title}</h4>
         <span
