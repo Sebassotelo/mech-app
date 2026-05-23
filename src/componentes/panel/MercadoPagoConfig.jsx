@@ -146,6 +146,123 @@ function defaultCheckoutForm(location) {
   };
 }
 
+function hydrateStoreForm(location, locationConfig) {
+  return {
+    name: locationConfig?.store?.name || defaultStoreForm(location).name,
+    externalId:
+      locationConfig?.store?.externalId || defaultStoreForm(location).externalId,
+    location: {
+      streetName: locationConfig?.store?.location?.streetName || "",
+      streetNumber: locationConfig?.store?.location?.streetNumber || "",
+      cityName: locationConfig?.store?.location?.cityName || "",
+      stateName: locationConfig?.store?.location?.stateName || "",
+      coordinates:
+        locationConfig?.store?.location?.coordinates ||
+        [locationConfig?.store?.location?.latitude, locationConfig?.store?.location?.longitude]
+          .filter(Boolean)
+          .join(", "),
+      reference: locationConfig?.store?.location?.reference || "",
+    },
+  };
+}
+
+function hydratePosForm(location, locationConfig) {
+  return {
+    name: locationConfig?.pos?.name || defaultPosForm(location).name,
+    externalPosId:
+      locationConfig?.pos?.externalId || defaultPosForm(location).externalPosId,
+  };
+}
+
+function hydrateCheckoutForm(location, locationConfig) {
+  return {
+    displayName:
+      locationConfig?.checkout?.displayName ||
+      locationConfig?.store?.name ||
+      defaultCheckoutForm(location).displayName,
+    orderLabel:
+      locationConfig?.checkout?.orderLabel ||
+      defaultCheckoutForm(location).orderLabel,
+  };
+}
+
+function hasSavedLocationConfig(locationConfig) {
+  if (!locationConfig) return false;
+
+  const store = locationConfig.store || {};
+  const pos = locationConfig.pos || {};
+  const checkout = locationConfig.checkout || {};
+  const storeLocation = store.location || {};
+
+  return Boolean(
+    store.id ||
+      store.externalId ||
+      store.name ||
+      storeLocation.streetName ||
+      storeLocation.streetNumber ||
+      storeLocation.cityName ||
+      storeLocation.stateName ||
+      storeLocation.coordinates ||
+      storeLocation.latitude ||
+      storeLocation.longitude ||
+      storeLocation.reference ||
+      pos.id ||
+      pos.externalId ||
+      pos.name ||
+      checkout.displayName ||
+      checkout.orderLabel,
+  );
+}
+
+function buildAddressLine(location) {
+  const parts = [
+    location?.streetName,
+    location?.streetNumber,
+    location?.cityName,
+    location?.stateName,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  return parts.length ? parts.join(", ") : "";
+}
+
+function buildCoordinatesLine(location) {
+  const inlineCoordinates = String(location?.coordinates || "").trim();
+  if (inlineCoordinates) return inlineCoordinates;
+
+  const latitude = String(location?.latitude || "").trim();
+  const longitude = String(location?.longitude || "").trim();
+  if (!latitude || !longitude) return "";
+
+  return `${latitude}, ${longitude}`;
+}
+
+function buildMapQuery(location) {
+  const coordinates = buildCoordinatesLine(location);
+  if (coordinates) return coordinates;
+  return buildAddressLine(location);
+}
+
+function buildGoogleMapsUrl(location) {
+  const query = buildMapQuery(location);
+  if (!query) return null;
+
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+function buildGoogleMapsEmbedUrl(location) {
+  const query = buildMapQuery(location);
+  if (!query) return null;
+
+  return `https://www.google.com/maps?q=${encodeURIComponent(query)}&z=15&output=embed`;
+}
+
+function readableValue(value, fallback = "No configurado") {
+  const normalized = String(value || "").trim();
+  return normalized || fallback;
+}
+
 export default function MercadoPagoConfig({ firestore, auth }) {
   const [selectedLocation, setSelectedLocation] = useState("pv1");
   const [mpConfig, setMpConfig] = useState(null);
@@ -160,6 +277,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
   const [savingCheckout, setSavingCheckout] = useState(false);
   const [resettingLocation, setResettingLocation] = useState(false);
   const [detectingLocation, setDetectingLocation] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
 
   useEffect(() => {
     if (!firestore) return;
@@ -181,43 +299,15 @@ export default function MercadoPagoConfig({ firestore, auth }) {
   }, [firestore]);
 
   useEffect(() => {
-    const locationConfig = mpConfig?.locations?.[selectedLocation] || {};
-    setStoreForm({
-      name: locationConfig?.store?.name || defaultStoreForm(selectedLocation).name,
-      externalId:
-        locationConfig?.store?.externalId ||
-        defaultStoreForm(selectedLocation).externalId,
-      location: {
-        streetName: locationConfig?.store?.location?.streetName || "",
-        streetNumber: locationConfig?.store?.location?.streetNumber || "",
-        cityName: locationConfig?.store?.location?.cityName || "",
-        stateName: locationConfig?.store?.location?.stateName || "",
-        coordinates:
-          locationConfig?.store?.location?.coordinates ||
-          [locationConfig?.store?.location?.latitude, locationConfig?.store?.location?.longitude]
-            .filter(Boolean)
-            .join(", "),
-        reference: locationConfig?.store?.location?.reference || "",
-      },
-    });
-    setPosForm({
-      name: locationConfig?.pos?.name || defaultPosForm(selectedLocation).name,
-      externalPosId:
-        locationConfig?.pos?.externalId ||
-        defaultPosForm(selectedLocation).externalPosId,
-    });
-    setCheckoutForm({
-      displayName:
-        locationConfig?.checkout?.displayName ||
-        locationConfig?.store?.name ||
-        defaultCheckoutForm(selectedLocation).displayName,
-      orderLabel:
-        locationConfig?.checkout?.orderLabel ||
-        defaultCheckoutForm(selectedLocation).orderLabel,
-    });
+    const nextLocationConfig = mpConfig?.locations?.[selectedLocation] || null;
+    setStoreForm(hydrateStoreForm(selectedLocation, nextLocationConfig));
+    setPosForm(hydratePosForm(selectedLocation, nextLocationConfig));
+    setCheckoutForm(hydrateCheckoutForm(selectedLocation, nextLocationConfig));
+    setIsEditing(!hasSavedLocationConfig(nextLocationConfig));
   }, [selectedLocation, mpConfig]);
 
   const locationConfig = mpConfig?.locations?.[selectedLocation] || null;
+  const hasSavedConfig = hasSavedLocationConfig(locationConfig);
   const isCapitalFederal = storeForm.location?.stateName === "Capital Federal";
   const connectedLabel = useMemo(() => {
     const pieces = [account?.nickname, account?.email].filter(Boolean);
@@ -230,6 +320,11 @@ export default function MercadoPagoConfig({ firestore, auth }) {
     connectedAccountId &&
     String(savedAccountId) !== String(connectedAccountId);
   const locationStatus = getLocationStatus(locationConfig);
+  const currentAddress = buildAddressLine(storeForm.location);
+  const currentCoordinates = buildCoordinatesLine(storeForm.location);
+  const currentReference = String(storeForm.location?.reference || "").trim();
+  const mapsUrl = buildGoogleMapsUrl(storeForm.location);
+  const mapEmbedUrl = buildGoogleMapsEmbedUrl(storeForm.location);
 
   async function getIdToken() {
     if (!auth?.currentUser) {
@@ -334,22 +429,23 @@ export default function MercadoPagoConfig({ firestore, auth }) {
             id: data?.store?.id || null,
             name: data?.store?.name || storeForm.name,
             externalId: data?.store?.externalId || normalizeId(storeForm.externalId),
-              location: {
-                streetName: locationPayload.street_name,
-                streetNumber: locationPayload.street_number,
-                cityName: locationPayload.city_name,
-                stateName: locationPayload.state_name,
-                coordinates: rawCoordinates,
-                latitude: String(locationPayload.latitude || ""),
-                longitude: String(locationPayload.longitude || ""),
-                reference: locationPayload.reference,
-              },
+            location: {
+              streetName: locationPayload.street_name,
+              streetNumber: locationPayload.street_number,
+              cityName: locationPayload.city_name,
+              stateName: locationPayload.state_name,
+              coordinates: rawCoordinates,
+              latitude: String(locationPayload.latitude || ""),
+              longitude: String(locationPayload.longitude || ""),
+              reference: locationPayload.reference,
+            },
             createdAt: serverTimestamp(),
           },
         },
         data?.account || null,
       );
 
+      setIsEditing(false);
       toast.success("Sucursal creada y guardada");
     } catch (e) {
       console.error(e);
@@ -410,6 +506,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
         data?.account || null,
       );
 
+      setIsEditing(false);
       toast.success("Caja creada. El QR ya está listo para imprimir.");
     } catch (e) {
       console.error(e);
@@ -434,6 +531,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
           updatedAt: serverTimestamp(),
         },
       });
+      setIsEditing(false);
       toast.success("Presentación del cobro guardada");
     } catch (e) {
       console.error(e);
@@ -481,30 +579,17 @@ export default function MercadoPagoConfig({ firestore, auth }) {
     }
   }
 
-  function buildGoogleMapsUrl() {
-    const query = [
-      storeForm.location?.streetName,
-      storeForm.location?.streetNumber,
-      storeForm.location?.cityName,
-      storeForm.location?.stateName,
-    ]
-      .filter(Boolean)
-      .join(" ");
-
-    if (!query.trim()) return null;
-    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
-  }
-
   function openGoogleMaps() {
-    const url = buildGoogleMapsUrl();
-    if (!url) {
+    if (!mapsUrl) {
       toast.error("Completá calle, número, ciudad o provincia primero");
       return;
     }
-    window.open(url, "_blank", "noopener,noreferrer");
+    window.open(mapsUrl, "_blank", "noopener,noreferrer");
   }
 
   function useCurrentLocation() {
+    if (!isEditing) return;
+
     if (!navigator?.geolocation) {
       toast.error("Este navegador no soporta geolocalización");
       return;
@@ -539,10 +624,17 @@ export default function MercadoPagoConfig({ firestore, auth }) {
     );
   }
 
+  function handleCancelEditing() {
+    setStoreForm(hydrateStoreForm(selectedLocation, locationConfig));
+    setPosForm(hydratePosForm(selectedLocation, locationConfig));
+    setCheckoutForm(hydrateCheckoutForm(selectedLocation, locationConfig));
+    setIsEditing(!hasSavedConfig);
+  }
+
   return (
     <div className="rounded-xl border border-white/10 bg-[#0E2330]">
       <div className="h-1 w-full bg-gradient-to-r from-[#00A650] via-[#009EE3] to-[#00A650]" />
-      <div className="p-4 sm:p-5 space-y-4">
+      <div className="space-y-4 p-4 sm:p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h4 className="text-lg font-semibold">Mercado Pago</h4>
@@ -551,21 +643,34 @@ export default function MercadoPagoConfig({ firestore, auth }) {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {hasSavedConfig && (
+              <button
+                type="button"
+                onClick={isEditing ? handleCancelEditing : () => setIsEditing(true)}
+                className={`rounded-xl px-3.5 py-2 text-sm ${
+                  isEditing
+                    ? "bg-amber-500/15 text-amber-100 ring-1 ring-amber-400/20 hover:bg-amber-500/20"
+                    : "bg-white/10 hover:bg-white/15"
+                }`}
+              >
+                {isEditing ? "Cancelar edición" : "Editar"}
+              </button>
+            )}
             <button
               type="button"
               onClick={refreshAccount}
               disabled={loadingAccount}
-              className="px-3.5 py-2 rounded-xl text-sm bg-white/10 hover:bg-white/15 disabled:opacity-60"
+              className="rounded-xl bg-white/10 px-3.5 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
             >
-              {loadingAccount ? "Verificando…" : "Verificar cuenta conectada"}
+              {loadingAccount ? "Verificando..." : "Verificar cuenta conectada"}
             </button>
             <button
               type="button"
               onClick={handleResetLocation}
               disabled={resettingLocation || !locationConfig}
-              className="px-3.5 py-2 rounded-xl text-sm bg-red-500/15 text-red-100 ring-1 ring-red-400/20 hover:bg-red-500/20 disabled:opacity-60"
+              className="rounded-xl bg-red-500/15 px-3.5 py-2 text-sm text-red-100 ring-1 ring-red-400/20 hover:bg-red-500/20 disabled:opacity-60"
             >
-              {resettingLocation ? "Reseteando sede…" : "Resetear esta sede"}
+              {resettingLocation ? "Reseteando sede..." : "Resetear esta sede"}
             </button>
           </div>
         </div>
@@ -608,262 +713,356 @@ export default function MercadoPagoConfig({ firestore, auth }) {
           </div>
         )}
 
-        <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="space-y-4">
-            <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-              <div className="flex flex-wrap items-center gap-2">
-                {LOCATIONS.map((loc) => (
+        {!isEditing && hasSavedConfig && (
+          <div className="rounded-2xl border border-emerald-400/20 bg-[linear-gradient(135deg,rgba(16,185,129,0.16),rgba(14,35,48,0.9))] px-4 py-3 text-sm text-emerald-50 shadow-[0_14px_30px_rgba(0,0,0,0.14)]">
+            Estás viendo el resumen guardado de esta sede. Tocá{" "}
+            <span className="font-semibold">Editar</span> para abrir el formulario
+            completo.
+          </div>
+        )}
+
+        <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {LOCATIONS.map((loc) => (
+              <button
+                key={loc}
+                type="button"
+                onClick={() => setSelectedLocation(loc)}
+                className={`rounded-lg px-3 py-1.5 text-sm ring-1 ring-white/10 ${
+                  selectedLocation === loc
+                    ? "bg-white/15"
+                    : "bg-transparent hover:bg-white/5"
+                }`}
+              >
+                {locationLabel(loc)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={`grid gap-4 ${isEditing ? "lg:grid-cols-[1.2fr_0.8fr]" : "lg:grid-cols-1"}`}>
+          {isEditing && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-sky-400/20 bg-[linear-gradient(180deg,rgba(17,44,62,0.96),rgba(12,33,45,0.96))] p-4 space-y-3 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
+                <div>
+                  <h5 className="font-medium">1. Crear sucursal</h5>
+                  <p className="text-xs text-white/60">
+                    Cargá los datos del local para dejar registrada esta sede en
+                    Mercado Pago.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Nombre sucursal"
+                    value={storeForm.name}
+                    onChange={(value) =>
+                      setStoreForm((prev) => ({ ...prev, name: value }))
+                    }
+                    placeholder="Sucursal PV1"
+                    disabled={!isEditing}
+                  />
+                  <Field
+                    label="Calle"
+                    value={storeForm.location?.streetName || ""}
+                    onChange={(value) =>
+                      setStoreForm((prev) => ({
+                        ...prev,
+                        location: { ...prev.location, streetName: value },
+                      }))
+                    }
+                    placeholder="Av. Siempre Viva"
+                    disabled={!isEditing}
+                  />
+                  <Field
+                    label="Número"
+                    value={storeForm.location?.streetNumber || ""}
+                    onChange={(value) =>
+                      setStoreForm((prev) => ({
+                        ...prev,
+                        location: { ...prev.location, streetNumber: value },
+                      }))
+                    }
+                    placeholder="742"
+                    disabled={!isEditing}
+                  />
+                  <Field
+                    label="Ciudad"
+                    as={isCapitalFederal ? "select" : "input"}
+                    value={storeForm.location?.cityName || ""}
+                    onChange={(value) =>
+                      setStoreForm((prev) => ({
+                        ...prev,
+                        location: { ...prev.location, cityName: value },
+                      }))
+                    }
+                    options={isCapitalFederal ? CABA_NEIGHBORHOODS : []}
+                    placeholder={
+                      isCapitalFederal
+                        ? "Seleccioná un barrio de CABA"
+                        : "Córdoba"
+                    }
+                    disabled={!isEditing}
+                  />
+                  <Field
+                    label="Provincia"
+                    as="select"
+                    value={storeForm.location?.stateName || ""}
+                    onChange={(value) =>
+                      setStoreForm((prev) => ({
+                        ...prev,
+                        location: { ...prev.location, stateName: value },
+                      }))
+                    }
+                    options={MP_PROVINCES}
+                    placeholder="Seleccioná una provincia"
+                    disabled={!isEditing}
+                  />
+                  <Field
+                    label="Coordenadas"
+                    value={storeForm.location?.coordinates || ""}
+                    onChange={(value) =>
+                      setStoreForm((prev) => ({
+                        ...prev,
+                        location: { ...prev.location, coordinates: value },
+                      }))
+                    }
+                    placeholder="-31.4201, -64.1888"
+                    disabled={!isEditing}
+                  />
+                </div>
+                <p className="text-xs text-white/50">
+                  El identificador interno de la sucursal se genera y se guarda
+                  automáticamente.
+                </p>
+                <Field
+                  label="Referencia"
+                  value={storeForm.location?.reference || ""}
+                  onChange={(value) =>
+                    setStoreForm((prev) => ({
+                      ...prev,
+                      location: { ...prev.location, reference: value },
+                    }))
+                  }
+                  placeholder="Frente al local / esquina / piso"
+                  disabled={!isEditing}
+                />
+                <div className="flex flex-wrap gap-2">
                   <button
-                    key={loc}
                     type="button"
-                    onClick={() => setSelectedLocation(loc)}
-                    className={`px-3 py-1.5 rounded-lg text-sm ring-1 ring-white/10 ${
-                      selectedLocation === loc ? "bg-white/15" : "bg-transparent hover:bg-white/5"
-                    }`}
+                    onClick={useCurrentLocation}
+                    disabled={detectingLocation || !isEditing}
+                    className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
                   >
-                    {locationLabel(loc)}
+                    {detectingLocation ? "Buscando ubicación..." : "Usar mi ubicación actual"}
                   </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
-              <div>
-                <h5 className="font-medium">1. Crear sucursal</h5>
-                <p className="text-xs text-white/60">
-                  Cargá los datos del local para dejar registrada esta sede en
-                  Mercado Pago.
+                  <button
+                    type="button"
+                    onClick={openGoogleMaps}
+                    className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+                  >
+                    Abrir dirección en Google Maps
+                  </button>
+                </div>
+                <p className="text-xs text-white/55">
+                  Pegá las coordenadas en un solo campo, por ejemplo{" "}
+                  <span className="font-mono">-31.4201, -64.1888</span>. Las podés
+                  copiar con click derecho en Google Maps sobre el local.
                 </p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="Nombre sucursal"
-                  value={storeForm.name}
-                  onChange={(value) =>
-                    setStoreForm((prev) => ({ ...prev, name: value }))
-                  }
-                  placeholder="Sucursal PV1"
-                />
-                <Field
-                  label="Calle"
-                  value={storeForm.location?.streetName || ""}
-                  onChange={(value) =>
-                    setStoreForm((prev) => ({
-                      ...prev,
-                      location: { ...prev.location, streetName: value },
-                    }))
-                  }
-                  placeholder="Av. Siempre Viva"
-                />
-                <Field
-                  label="Número"
-                  value={storeForm.location?.streetNumber || ""}
-                  onChange={(value) =>
-                    setStoreForm((prev) => ({
-                      ...prev,
-                      location: { ...prev.location, streetNumber: value },
-                    }))
-                  }
-                  placeholder="742"
-                />
-                <Field
-                  label="Ciudad"
-                  as={isCapitalFederal ? "select" : "input"}
-                  value={storeForm.location?.cityName || ""}
-                  onChange={(value) =>
-                    setStoreForm((prev) => ({
-                      ...prev,
-                      location: { ...prev.location, cityName: value },
-                    }))
-                  }
-                  options={isCapitalFederal ? CABA_NEIGHBORHOODS : []}
-                  placeholder={
-                    isCapitalFederal
-                      ? "Seleccioná un barrio de CABA"
-                      : "Córdoba"
-                  }
-                />
-                <Field
-                  label="Provincia"
-                  as="select"
-                  value={storeForm.location?.stateName || ""}
-                  onChange={(value) =>
-                    setStoreForm((prev) => ({
-                      ...prev,
-                      location: { ...prev.location, stateName: value },
-                    }))
-                  }
-                  options={MP_PROVINCES}
-                  placeholder="Seleccioná una provincia"
-                />
-                <Field
-                  label="Coordenadas"
-                  value={storeForm.location?.coordinates || ""}
-                  onChange={(value) =>
-                    setStoreForm((prev) => ({
-                      ...prev,
-                      location: { ...prev.location, coordinates: value },
-                    }))
-                  }
-                  placeholder="-31.4201, -64.1888"
-                />
-               </div>
-               <p className="text-xs text-white/50">
-                 El identificador interno de la sucursal se genera y se guarda
-                 automáticamente.
-               </p>
-               <Field
-                 label="Referencia"
-                 value={storeForm.location?.reference || ""}
-                 onChange={(value) =>
-                   setStoreForm((prev) => ({
-                     ...prev,
-                     location: { ...prev.location, reference: value },
-                   }))
-                 }
-                 placeholder="Frente al local / esquina / piso"
-               />
-               <div className="flex flex-wrap gap-2">
-                 <button
-                   type="button"
-                   onClick={useCurrentLocation}
-                   disabled={detectingLocation}
-                   className="px-3 py-2 rounded-xl text-sm bg-white/10 hover:bg-white/15 disabled:opacity-60"
-                 >
-                   {detectingLocation ? "Buscando ubicación…" : "Usar mi ubicación actual"}
-                 </button>
-                 <button
-                   type="button"
-                   onClick={openGoogleMaps}
-                   className="px-3 py-2 rounded-xl text-sm bg-white/10 hover:bg-white/15"
-                 >
-                   Abrir dirección en Google Maps
-                 </button>
-               </div>
-               <p className="text-xs text-white/55">
-                 Pegá las coordenadas en un solo campo, por ejemplo <span className="font-mono">-31.4201, -64.1888</span>. Las podés copiar con click derecho en Google Maps sobre el local.
-               </p>
-               {isCapitalFederal && (
-                 <p className="text-xs text-amber-100/80">
-                   Para <span className="font-medium">Capital Federal</span>, Mercado Pago exige que la ciudad sea un barrio válido de CABA.
-                 </p>
-               )}
-               <p className="text-xs text-white/45">
-                 "Usar mi ubicación actual" sirve solo si estás físicamente en el local. Si estás configurando desde otro lugar, usá Google Maps.
-               </p>
-               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleCreateStore}
-                  disabled={savingStore}
-                  className="px-3.5 py-2 rounded-xl text-sm text-white bg-gradient-to-r from-[#00A650] to-[#009EE3] hover:brightness-110 disabled:opacity-60"
-                >
-                  {savingStore ? "Guardando sucursal…" : "Guardar sucursal"}
-                </button>
-                {locationConfig?.store?.id && (
-                  <span className="text-xs text-white/60">
-                    Sucursal guardada: {locationConfig.store.name}
-                  </span>
+                {isCapitalFederal && (
+                  <p className="text-xs text-amber-100/80">
+                    Para <span className="font-medium">Capital Federal</span>,
+                    Mercado Pago exige que la ciudad sea un barrio válido de CABA.
+                  </p>
                 )}
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
-              <div>
-                <h5 className="font-medium">2. Crear caja y QR</h5>
-                <p className="text-xs text-white/60">
-                  Esto crea la caja de cobro para esta sede y genera el QR fijo
-                  que después podés imprimir.
+                <p className="text-xs text-white/45">
+                  "Usar mi ubicación actual" sirve solo si estás físicamente en el
+                  local. Si estás configurando desde otro lugar, usá Google Maps.
                 </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCreateStore}
+                    disabled={savingStore || !isEditing}
+                    className="rounded-xl bg-gradient-to-r from-[#00A650] to-[#009EE3] px-3.5 py-2 text-sm text-white hover:brightness-110 disabled:opacity-60"
+                  >
+                    {savingStore ? "Guardando sucursal..." : "Guardar sucursal"}
+                  </button>
+                  {locationConfig?.store?.id && (
+                    <span className="text-xs text-white/60">
+                      Sucursal guardada: {locationConfig.store.name}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="grid gap-3 sm:grid-cols-1">
-                <Field
-                  label="Nombre caja"
-                  value={posForm.name}
-                  onChange={(value) =>
-                    setPosForm((prev) => ({ ...prev, name: value }))
-                  }
-                  placeholder="Caja PV1"
-                />
+
+              <div className="rounded-xl border border-sky-400/20 bg-[linear-gradient(180deg,rgba(17,44,62,0.96),rgba(12,33,45,0.96))] p-4 space-y-3 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
+                <div>
+                  <h5 className="font-medium">2. Crear caja y QR</h5>
+                  <p className="text-xs text-white/60">
+                    Esto crea la caja de cobro para esta sede y genera el QR fijo
+                    que después podés imprimir.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-1">
+                  <Field
+                    label="Nombre caja"
+                    value={posForm.name}
+                    onChange={(value) =>
+                      setPosForm((prev) => ({ ...prev, name: value }))
+                    }
+                    placeholder="Caja PV1"
+                    disabled={!isEditing}
+                  />
+                </div>
+                <p className="text-xs text-white/50">
+                  El identificador interno de la caja también se genera de forma
+                  automática para esta sede.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCreatePos}
+                    disabled={savingPos || !isEditing}
+                    className="rounded-xl bg-gradient-to-r from-[#00A650] to-[#009EE3] px-3.5 py-2 text-sm text-white hover:brightness-110 disabled:opacity-60"
+                  >
+                    {savingPos ? "Creando caja..." : "Crear caja y generar QR"}
+                  </button>
+                  {locationConfig?.pos?.externalId && (
+                    <span className="text-xs text-white/60">
+                      Caja lista para esta sede.
+                    </span>
+                  )}
+                </div>
               </div>
-              <p className="text-xs text-white/50">
-                El identificador interno de la caja también se genera de forma
-                automática para esta sede.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleCreatePos}
-                  disabled={savingPos}
-                  className="px-3.5 py-2 rounded-xl text-sm text-white bg-gradient-to-r from-[#00A650] to-[#009EE3] hover:brightness-110 disabled:opacity-60"
-                >
-                  {savingPos ? "Creando caja…" : "Crear caja y generar QR"}
-                </button>
-                {locationConfig?.pos?.externalId && (
-                  <span className="text-xs text-white/60">
-                    Caja lista para esta sede.
+
+              <div className="rounded-xl border border-sky-400/20 bg-[linear-gradient(180deg,rgba(17,44,62,0.96),rgba(12,33,45,0.96))] p-4 space-y-2 shadow-[0_18px_40px_rgba(0,0,0,0.18)]">
+                <h5 className="font-medium">3. Cómo verá el cobro tu cliente</h5>
+                <p className="text-xs text-white/60">
+                  Estos textos aparecen al momento de pagar, para que el cobro se
+                  vea claro en Mercado Pago.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Nombre visible del local"
+                    value={checkoutForm.displayName}
+                    onChange={(value) =>
+                      setCheckoutForm((prev) => ({ ...prev, displayName: value }))
+                    }
+                    placeholder="Mecánica Centro"
+                    disabled={!isEditing}
+                  />
+                  <Field
+                    label="Leyenda del cobro"
+                    value={checkoutForm.orderLabel}
+                    onChange={(value) =>
+                      setCheckoutForm((prev) => ({ ...prev, orderLabel: value }))
+                    }
+                    placeholder="Venta presencial"
+                    disabled={!isEditing}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveCheckout}
+                    disabled={savingCheckout || !isEditing}
+                    className="rounded-xl bg-white/10 px-3.5 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
+                  >
+                    {savingCheckout ? "Guardando..." : "Guardar presentación"}
+                  </button>
+                  <span className="text-xs text-white/55">
+                    Esto afecta nuevas ventas de la sede seleccionada.
                   </span>
-                )}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
+                <h5 className="font-medium">4. Paso a paso recomendado</h5>
+                <ol className="list-decimal space-y-1 pl-5 text-sm text-white/75">
+                  <li>Verificá primero que la cuenta conectada sea la del local correcto.</li>
+                  <li>Elegí la sede que querés preparar.</li>
+                  <li>Guardá la sucursal con los datos del local.</li>
+                  <li>Creá la caja para generar el QR fijo de esa sede.</li>
+                  <li>Abrí el PDF o la imagen del QR y dejalo listo para imprimir.</li>
+                  <li>Si la cuenta mostrada no corresponde al local, frená y pedí ayuda antes de continuar.</li>
+                </ol>
               </div>
             </div>
+          )}
 
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-              <h5 className="font-medium">3. Cómo verá el cobro tu cliente</h5>
-              <p className="text-xs text-white/60">
-                Estos textos aparecen al momento de pagar, para que el cobro se
-                vea claro en Mercado Pago.
-              </p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="Nombre visible del local"
-                  value={checkoutForm.displayName}
-                  onChange={(value) =>
-                    setCheckoutForm((prev) => ({ ...prev, displayName: value }))
-                  }
-                  placeholder="Mecánica Centro"
-                />
-                <Field
-                  label="Leyenda del cobro"
-                  value={checkoutForm.orderLabel}
-                  onChange={(value) =>
-                    setCheckoutForm((prev) => ({ ...prev, orderLabel: value }))
-                  }
-                  placeholder="Venta presencial"
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSaveCheckout}
-                  disabled={savingCheckout}
-                  className="px-3.5 py-2 rounded-xl text-sm bg-white/10 hover:bg-white/15 disabled:opacity-60"
-                >
-                  {savingCheckout ? "Guardando..." : "Guardar presentación"}
-                </button>
-                <span className="text-xs text-white/55">
-                  Esto afecta nuevas ventas de la sede seleccionada.
+          <div className={`space-y-4 ${isEditing ? "" : "mx-auto w-full max-w-4xl"}`}>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h5 className="font-medium">Resumen de la sede</h5>
+                  <p className="text-xs text-white/60">
+                    Vista rápida de cómo quedó configurado este punto de venta.
+                  </p>
+                </div>
+                <span className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] text-white/70">
+                  {locationStatus.value}
                 </span>
               </div>
+
+              <div className="grid gap-3">
+                <SummaryRow label="Sucursal" value={readableValue(storeForm.name)} />
+                <SummaryRow label="Caja" value={readableValue(posForm.name)} />
+                <SummaryRow
+                  label="Dirección"
+                  value={readableValue(currentAddress)}
+                />
+                <SummaryRow
+                  label="Referencia"
+                  value={readableValue(currentReference)}
+                />
+                <SummaryRow
+                  label="Coordenadas"
+                  value={readableValue(currentCoordinates)}
+                />
+              </div>
             </div>
 
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-              <h5 className="font-medium">4. Paso a paso recomendado</h5>
-              <ol className="list-decimal pl-5 space-y-1 text-sm text-white/75">
-                <li>Verificá primero que la cuenta conectada sea la del local correcto.</li>
-                <li>Elegí la sede que querés preparar.</li>
-                <li>Guardá la sucursal con los datos del local.</li>
-                <li>Creá la caja para generar el QR fijo de esa sede.</li>
-                <li>Abrí el PDF o la imagen del QR y dejalo listo para imprimir.</li>
-                <li>Si la cuenta mostrada no corresponde al local, frená y pedí ayuda antes de continuar.</li>
-              </ol>
-            </div>
-          </div>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+              <div>
+                <h5 className="font-medium">Ubicación del punto de venta</h5>
+                <p className="text-xs text-white/60">
+                  Este mapa muestra dónde está configurada la sucursal de la sede
+                  seleccionada.
+                </p>
+              </div>
 
-          <div className="space-y-4">
+              {mapEmbedUrl ? (
+                <div className="overflow-hidden rounded-xl border border-white/10 bg-[#0C212D]">
+                  <iframe
+                    title={`Mapa ${locationLabel(selectedLocation)}`}
+                    src={mapEmbedUrl}
+                    className="h-48 w-full"
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-white/10 bg-[#0C212D] px-4 py-6 text-sm text-white/60">
+                  Todavía no hay ubicación guardada para esta sede.
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={openGoogleMaps}
+                  disabled={!mapsUrl}
+                  className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15 disabled:opacity-60"
+                >
+                  Abrir en Google Maps
+                </button>
+              </div>
+            </div>
+
             <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
               <h5 className="font-medium">QR actual de la sede</h5>
               {loadingConfig ? (
-                <p className="text-sm text-white/60">Cargando configuración…</p>
+                <p className="text-sm text-white/60">Cargando configuración...</p>
               ) : locationConfig?.pos?.qr?.image ? (
                 <>
                   <div className="rounded-xl bg-white p-3">
@@ -879,7 +1078,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
                         href={locationConfig.pos.qr.templateDocument}
                         target="_blank"
                         rel="noreferrer"
-                        className="px-3 py-2 rounded-xl text-sm bg-white/10 hover:bg-white/15"
+                        className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
                       >
                         Abrir PDF para imprimir
                       </a>
@@ -889,7 +1088,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
                         href={locationConfig.pos.qr.templateImage}
                         target="_blank"
                         rel="noreferrer"
-                        className="px-3 py-2 rounded-xl text-sm bg-white/10 hover:bg-white/15"
+                        className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
                       >
                         Abrir imagen del QR
                       </a>
@@ -909,7 +1108,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
                 Antes de dar por lista esta sede, revisá estos puntos para evitar
                 confusiones en el local.
               </p>
-              <ol className="list-decimal pl-5 space-y-1 text-sm text-white/70">
+              <ol className="list-decimal space-y-1 pl-5 text-sm text-white/70">
                 <li>Confirmá que el nombre del local esté bien escrito.</li>
                 <li>Verificá que la dirección y las coordenadas correspondan a esa sede.</li>
                 <li>Comprobá que el QR se vea y se pueda abrir para imprimir.</li>
@@ -919,7 +1118,7 @@ export default function MercadoPagoConfig({ firestore, auth }) {
 
             <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
               <h5 className="font-medium">Si necesitás ayuda</h5>
-              <ul className="list-disc pl-5 space-y-1 text-sm text-white/70">
+              <ul className="list-disc space-y-1 pl-5 text-sm text-white/70">
                 <li>Si la cuenta mostrada no es la del local, no continúes con la configuración.</li>
                 <li>Si no podés verificar la cuenta o crear la caja, pedile ayuda a quien instaló la app.</li>
                 <li>Una vez guardada la caja, las próximas ventas de esa sede podrán usar ese QR.</li>
@@ -997,7 +1196,11 @@ function Field({
   placeholder,
   as = "input",
   options = [],
+  disabled = false,
 }) {
+  const baseClassName =
+    "mt-1 w-full rounded-xl border border-white/10 bg-[#0C212D] px-3.5 py-2 text-sm outline-none ring-[#009EE3]/60 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60";
+
   return (
     <div>
       <label className="text-xs text-white/70">{label}</label>
@@ -1005,7 +1208,8 @@ function Field({
         <select
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full mt-1 px-3.5 py-2 rounded-xl bg-[#0C212D] border border-white/10 text-sm outline-none focus:ring-2 ring-[#009EE3]/60"
+          className={baseClassName}
+          disabled={disabled}
         >
           <option value="">{placeholder || "Seleccionar"}</option>
           {options.map((option) => (
@@ -1018,8 +1222,9 @@ function Field({
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full mt-1 px-3.5 py-2 rounded-xl bg-[#0C212D] border border-white/10 text-sm outline-none focus:ring-2 ring-[#009EE3]/60"
+          className={baseClassName}
           placeholder={placeholder}
+          disabled={disabled}
         />
       )}
     </div>
@@ -1032,6 +1237,17 @@ function InfoCard({ label, value, hint }) {
       <div className="text-xs uppercase tracking-widest text-white/45">{label}</div>
       <div className="mt-1 break-words text-sm font-medium">{value || "—"}</div>
       <div className="mt-1 text-xs text-white/50">{hint}</div>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-[#0C212D] px-3 py-2">
+      <div className="text-[11px] uppercase tracking-widest text-white/45">
+        {label}
+      </div>
+      <div className="mt-1 text-sm text-white/90">{value}</div>
     </div>
   );
 }
