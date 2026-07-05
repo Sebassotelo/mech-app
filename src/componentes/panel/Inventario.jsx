@@ -19,6 +19,7 @@ import {
   FiLink,
   FiPlus,
   FiX,
+  FiCheck,
   FiLayers,
   FiSearch,
 } from "react-icons/fi";
@@ -135,6 +136,8 @@ export default function Inventario() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blankProduct());
+  const [inlinePriceEdit, setInlinePriceEdit] = useState(null);
+  const inlinePriceEditRef = useRef(null);
 
   // refs de inputs
   const skuInputRef = useRef(null);
@@ -230,6 +233,31 @@ export default function Inventario() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [eqPickerOpen]);
+
+  useEffect(() => {
+    if (!inlinePriceEdit) return;
+
+    function onPointerDown(e) {
+      const root = inlinePriceEditRef.current;
+      if (!root) return;
+      if (root === e.target || root.contains(e.target)) return;
+      cancelInlinePriceEdit();
+    }
+
+    function onKeyDown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelInlinePriceEdit();
+      }
+    }
+
+    document.addEventListener("mousedown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [inlinePriceEdit]);
 
   // Import progress
   const [imp, setImp] = useState({
@@ -476,6 +504,67 @@ export default function Inventario() {
       );
     } catch (e) {
       console.error(e);
+    }
+  }
+
+  function getInlinePriceKey(prod) {
+    return `${prod?.chunkDoc || ""}_${prod?.id || ""}`;
+  }
+
+  function startInlinePriceEdit(prod) {
+    if (!isAdmin4 || !prod?.id || !prod?.chunkDoc) return;
+    setInlinePriceEdit({
+      key: getInlinePriceKey(prod),
+      productId: prod.id,
+      chunkDoc: prod.chunkDoc,
+      value: toStr(finalPriceContado(prod)),
+      saving: false,
+    });
+  }
+
+  function cancelInlinePriceEdit() {
+    setInlinePriceEdit(null);
+  }
+
+  async function saveInlinePriceEdit(prod) {
+    if (!isAdmin4 || !firestore || !inlinePriceEdit) return;
+
+    const rawValue = String(inlinePriceEdit.value || "").trim();
+    if (!rawValue) {
+      toast.error("Ingresá un precio para guardar.");
+      return;
+    }
+
+    try {
+      const nextValue = toNum(rawValue);
+      const targetField =
+        prod?.discountActive && Number(prod?.priceDiscount || 0) > 0
+          ? "priceDiscount"
+          : "price";
+      const nextPayload = {
+        ...prod,
+        [targetField]: nextValue,
+        updatedAt: serverTimestamp(),
+      };
+
+      validate({
+        ...prod,
+        ...nextPayload,
+      });
+
+      setInlinePriceEdit((prev) => (prev ? { ...prev, saving: true } : prev));
+
+      const docRef = doc(firestore, "productos", prod.chunkDoc);
+      await updateDoc(docRef, {
+        [`p_${prod.id}`]: nextPayload,
+      });
+
+      toast.success("Precio actualizado");
+      setInlinePriceEdit(null);
+    } catch (err) {
+      console.error(err);
+      toast.error(err?.message || "No se pudo actualizar el precio");
+      setInlinePriceEdit((prev) => (prev ? { ...prev, saving: false } : prev));
     }
   }
 
@@ -2036,15 +2125,83 @@ export default function Inventario() {
                       </Td>
                     )}
                     {cols.precio && (
-                      <Td
-                        className="text-right whitespace-nowrap"
-                        title={fmtTitle(
-                          "Precio (venta)",
-                          money(finalPriceContado(p)),
-                        )}
-                      >
-                        {money(finalPriceContado(p))}
-                      </Td>
+                      (() => {
+                        const priceKey = getInlinePriceKey(p);
+                        const isInlineEditing =
+                          inlinePriceEdit?.key === priceKey;
+
+                        return (
+                          <Td
+                            className="text-right whitespace-nowrap"
+                            contentClassName="relative overflow-visible whitespace-nowrap"
+                            title={fmtTitle(
+                              "Precio (venta)",
+                              money(finalPriceContado(p)),
+                            )}
+                          >
+                            {isAdmin4 && isInlineEditing ? (
+                              <div
+                                ref={inlinePriceEditRef}
+                                className="absolute right-0 top-1/2 z-20 inline-flex -translate-y-1/2 items-center justify-end gap-1 rounded-xl border border-sky-400/30 bg-[#0B2130] p-1 shadow-[0_10px_24px_rgba(0,0,0,0.28)]"
+                              >
+                                <input
+                                  autoFocus
+                                  value={inlinePriceEdit.value}
+                                  onChange={(e) =>
+                                    setInlinePriceEdit((prev) =>
+                                      prev
+                                        ? { ...prev, value: e.target.value }
+                                        : prev,
+                                    )
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      saveInlinePriceEdit(p);
+                                    }
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      cancelInlinePriceEdit();
+                                    }
+                                  }}
+                                  className="h-8 w-[72px] rounded-lg border border-sky-400/35 bg-[#102736] px-2 py-1 text-right text-sm font-medium text-white outline-none ring-[#009EE3]/60 placeholder:text-white/30 focus:ring-2"
+                                  inputMode="decimal"
+                                  placeholder="0,00"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => saveInlinePriceEdit(p)}
+                                  disabled={!!inlinePriceEdit?.saving}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-400/25 transition hover:bg-emerald-500/25 disabled:opacity-60"
+                                  title="Confirmar precio"
+                                >
+                                  <FiCheck className="h-4 w-4" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onDoubleClick={() => startInlinePriceEdit(p)}
+                                className={`inline-flex max-w-full justify-end rounded-lg px-1.5 py-1 text-right transition ${
+                                  isAdmin4
+                                    ? "hover:bg-white/5"
+                                    : "cursor-default"
+                                }`}
+                                title={
+                                  isAdmin4
+                                    ? `${money(finalPriceContado(p))} · Doble click para editar`
+                                    : fmtTitle(
+                                        "Precio (venta)",
+                                        money(finalPriceContado(p)),
+                                      )
+                                }
+                              >
+                                {money(finalPriceContado(p))}
+                              </button>
+                            )}
+                          </Td>
+                        );
+                      })()
                     )}
                     {cols.ivaV && (
                       <Td
@@ -2909,7 +3066,12 @@ function Th({ children, className = "" }) {
     </th>
   );
 }
-function Td({ children, className = "", stickyBg = false }) {
+function Td({
+  children,
+  className = "",
+  stickyBg = false,
+  contentClassName = "truncate",
+}) {
   const isSticky = className.includes("sticky");
   const baseBg = stickyBg ? "bg-[#0E2533]" : "";
   return (
@@ -2923,7 +3085,7 @@ function Td({ children, className = "", stickyBg = false }) {
         .join(" ")
         .trim()}
     >
-      <div className="truncate">{children}</div>
+      <div className={contentClassName}>{children}</div>
     </td>
   );
 }
