@@ -38,6 +38,7 @@ const PAYMENT_METHODS = [
   { id: "efectivo", label: "Efectivo" },
   { id: "mercadago", label: "MercadoPago" },
 ];
+const SPLIT_PAYMENT_METHODS = PAYMENT_METHODS;
 
 const LS = {
   method: "mx.pay.method",
@@ -80,6 +81,10 @@ export default function Ventas({ location = "pv1" }) {
 
   // ====== Estado de pago (persistente) ======
   const [paymentMethod, setPaymentMethod] = useState("efectivo");
+  const [splitPaymentsEnabled, setSplitPaymentsEnabled] = useState(false);
+  const [paymentSplits, setPaymentSplits] = useState(() =>
+    createInitialManualSplits("efectivo"),
+  );
   const [applyExtra, setApplyExtra] = useState(false);
   const [extraMode, setExtraMode] = useState("percent"); // percent | fixed
   const [extraPercent, setExtraPercent] = useState(0);
@@ -413,6 +418,35 @@ export default function Ventas({ location = "pv1" }) {
     return Math.max(0, t);
   }, [subtotal, surchargeAmount, discountAmount]);
 
+  const normalizedManualSplits = useMemo(
+    () => normalizeManualSplits(paymentSplits),
+    [paymentSplits],
+  );
+  const splitAssignedAmount = useMemo(
+    () =>
+      normalizedManualSplits.reduce(
+        (acc, split) => acc + Number(split.amount || 0),
+        0,
+      ),
+    [normalizedManualSplits],
+  );
+  const splitRemainingAmount = useMemo(
+    () => Math.round((Number(total) - Number(splitAssignedAmount)) * 100) / 100,
+    [total, splitAssignedAmount],
+  );
+  const splitDifference = Math.abs(splitRemainingAmount);
+  const splitHasValidAmounts = normalizedManualSplits.every(
+    (split) => split.method && Number(split.amount) > 0,
+  );
+  const splitMercadoPagoCount = useMemo(
+    () =>
+      normalizedManualSplits.filter((split) => isMercadoPagoMethod(split.method))
+        .length,
+    [normalizedManualSplits],
+  );
+  const splitHasMultipleMercadoPago = splitMercadoPagoCount > 1;
+  const splitNeedsAdjustment = splitDifference > 0.009;
+
   /* =========================
    * Cambio de medio de pago
    * ========================= */
@@ -432,6 +466,45 @@ export default function Ventas({ location = "pv1" }) {
     } else {
       setApplyDiscount(false);
     }
+  };
+
+  const toggleSplitPayments = (checked) => {
+    setSplitPaymentsEnabled(checked);
+    if (checked) {
+      setPaymentSplits((prev) => {
+        if (Array.isArray(prev) && prev.length >= 2) return prev;
+        return createInitialManualSplits(paymentMethod);
+      });
+    }
+  };
+
+  const updatePaymentSplit = (splitId, patch) => {
+    setPaymentSplits((prev = []) =>
+      prev.map((split) =>
+        split.id === splitId ? { ...split, ...patch } : split,
+      ),
+    );
+  };
+
+  const addPaymentSplit = () => {
+    setPaymentSplits((prev = []) => [
+      ...prev,
+      createManualPaymentSplit(
+        prev.some((split) => split.method === "efectivo") ? "transferencia" : "efectivo",
+      ),
+    ]);
+  };
+
+  const removePaymentSplit = (splitId) => {
+    setPaymentSplits((prev = []) => {
+      if (prev.length <= 2) return prev;
+      return prev.filter((split) => split.id !== splitId);
+    });
+  };
+
+  const resetPaymentSplitState = () => {
+    setSplitPaymentsEnabled(false);
+    setPaymentSplits(createInitialManualSplits(paymentMethod));
   };
 
   /* =========================
@@ -855,6 +928,27 @@ export default function Ventas({ location = "pv1" }) {
     const lines = Object.values(cart);
     if (lines.length === 0) return toast.error("Agregá productos al carrito");
 
+    if (splitPaymentsEnabled) {
+      if (normalizedManualSplits.length < 2) {
+        return toast.error("Agregá al menos dos medios para un cobro dividido.");
+      }
+      if (!splitHasValidAmounts) {
+        return toast.error(
+          "Completá método y monto válido en cada tramo del cobro.",
+        );
+      }
+      if (splitNeedsAdjustment) {
+        return toast.error(
+          `La suma de los pagos debe dar ${money(total)} exactos.`,
+        );
+      }
+      if (splitHasMultipleMercadoPago) {
+        return toast.error(
+          "Solo podés usar un tramo de Mercado Pago por venta mixta.",
+        );
+      }
+    }
+
     const groups = {};
     for (const it of lines) {
       const cd = it.prod.chunkDoc;
@@ -862,7 +956,21 @@ export default function Ventas({ location = "pv1" }) {
       groups[cd].push(it);
     }
 
-    const isMercadoPago = paymentMethod === "mercadago";
+    const paymentBreakdown = buildCheckoutPaymentBreakdown({
+      splitPaymentsEnabled,
+      normalizedSplits: normalizedManualSplits,
+      paymentMethod,
+      total,
+      serverTimestamp,
+    });
+    const paymentSummary = buildCheckoutPaymentSummary({
+      paymentBreakdown,
+      paymentMethod,
+      total,
+    });
+    const mercadoPagoSplit =
+      paymentBreakdown.find((entry) => isMercadoPagoMethod(entry?.method)) || null;
+    const isMercadoPago = paymentSummary.pendingAmount > 0;
 
     const updateStockByGroups = async (direction = -1) => {
       for (const [chunkId, chunkLines] of Object.entries(groups)) {
@@ -915,15 +1023,56 @@ export default function Ventas({ location = "pv1" }) {
       chunkDocId,
       ventaKey,
       message,
-      { releaseReservation = false } = {},
+      {
+        releaseReservation = false,
+        paymentBreakdown: currentBreakdown = [],
+        paymentSummary: currentSummary = null,
+      } = {},
     ) => {
       const ref = doc(firestore, "ventas", chunkDocId);
+      const updatedBreakdown = currentBreakdown.map((entry) =>
+        isMercadoPagoMethod(entry?.method)
+          ? {
+              ...entry,
+              status: "error",
+              statusDetail: String(message || "").slice(0, 250),
+              updatedAt: serverTimestamp(),
+            }
+          : entry,
+      );
+      const approvedAmount = updatedBreakdown
+        .filter((entry) => String(entry?.status || "").toLowerCase() === "approved")
+        .reduce((acc, entry) => acc + Number(entry?.amount || 0), 0);
+      const methods = Array.from(
+        new Set(updatedBreakdown.map((entry) => entry?.method).filter(Boolean)),
+      );
+      const hasMixedManual = updatedBreakdown.some(
+        (entry) => !isMercadoPagoMethod(entry?.method),
+      );
+      const resolvedProvider = currentSummary?.provider || (hasMixedManual ? "mixed" : "mercadopago");
+      const resolvedSplitMode =
+        currentSummary?.splitMode ||
+        (updatedBreakdown.length > 1
+          ? hasMixedManual
+            ? "mixed_with_mp"
+            : "manual_multiple"
+          : "single");
       const updates = {
         [`${ventaKey}.status`]: "payment_error",
-        [`${ventaKey}.payment.status`]: "error",
+        [`${ventaKey}.payment.status`]: approvedAmount > 0 ? "partial_error" : "error",
+        [`${ventaKey}.payment.provider`]: resolvedProvider,
+        [`${ventaKey}.payment.method`]:
+          updatedBreakdown.length > 1
+            ? "multiple"
+            : updatedBreakdown[0]?.method || paymentMethod,
+        [`${ventaKey}.payment.approvedAmount`]: approvedAmount,
+        [`${ventaKey}.payment.pendingAmount`]: 0,
+        [`${ventaKey}.payment.splitMode`]: resolvedSplitMode,
+        [`${ventaKey}.payment.methods`]: methods,
         [`${ventaKey}.payment.errorMessage`]: String(message || "")
           .slice(0, 250),
         [`${ventaKey}.payment.updatedAt`]: serverTimestamp(),
+        [`${ventaKey}.paymentBreakdown`]: updatedBreakdown,
       };
 
       if (releaseReservation) {
@@ -950,7 +1099,13 @@ export default function Ventas({ location = "pv1" }) {
       const res = await fetch("/api/mp/create-order", {
         method: "POST",
         headers,
-        body: JSON.stringify({ ventaKey, chunkDocId, total, lines }),
+        body: JSON.stringify({
+          ventaKey,
+          chunkDocId,
+          total,
+          lines,
+          splitId: mercadoPagoSplit?.id || null,
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -969,7 +1124,7 @@ export default function Ventas({ location = "pv1" }) {
             ventaId: null,
             chunkDocId: null,
             open: true,
-            total: Number(total),
+            total: Number(paymentSummary.pendingAmount || total),
             itemCount: lines.length,
             location,
             orderId: null,
@@ -1017,9 +1172,14 @@ export default function Ventas({ location = "pv1" }) {
           currency: "ARS",
         },
         payment: {
-          method: paymentMethod,
-          provider: isMercadoPago ? "mercadopago" : "manual",
-          status: isMercadoPago ? "pending" : "approved",
+          method: paymentSummary.method,
+          provider: paymentSummary.provider,
+          status: paymentSummary.status,
+          approvedAmount: paymentSummary.approvedAmount,
+          pendingAmount: paymentSummary.pendingAmount,
+          totalAmount: paymentSummary.totalAmount,
+          splitMode: paymentSummary.splitMode,
+          methods: paymentSummary.methods,
           updatedAt: serverTimestamp(),
           surcharge: {
             applied: !!applyExtra,
@@ -1040,9 +1200,11 @@ export default function Ventas({ location = "pv1" }) {
             amount: Number(discountAmount),
           },
         },
-        status: isMercadoPago ? "payment_pending" : "paid",
-        stockReservationActive: !!isMercadoPago,
-        stockReservedAt: isMercadoPago ? serverTimestamp() : null,
+        paymentBreakdown,
+        status: resolveSaleStatusFromPaymentStatus(paymentSummary.status),
+        stockReservationActive: paymentSummary.pendingAmount > 0,
+        stockReservedAt:
+          paymentSummary.pendingAmount > 0 ? serverTimestamp() : null,
       };
 
       let ventaSaved;
@@ -1081,7 +1243,7 @@ export default function Ventas({ location = "pv1" }) {
           mpOrder = await createMercadoPagoOrder({
             ventaKey: ventaSaved.ventaId,
             chunkDocId: ventaSaved.docId,
-            total: ventaPayload.totals.total,
+            total: paymentSummary.pendingAmount || ventaPayload.totals.total,
             lines: ventaPayload.lines,
           });
           setPaymentMonitor((prev) =>
@@ -1100,6 +1262,8 @@ export default function Ventas({ location = "pv1" }) {
           syncStockInMemory(1);
           await markVentaMpError(ventaSaved.docId, ventaSaved.ventaId, err?.message, {
             releaseReservation: true,
+            paymentBreakdown,
+            paymentSummary,
           });
           setPaymentMonitor((prev) =>
             prev
@@ -1124,6 +1288,7 @@ export default function Ventas({ location = "pv1" }) {
         ventaId: ventaSaved.ventaId,
         chunkDocId: ventaSaved.docId,
         total: ventaPayload.totals.total,
+        mpAmount: Number(paymentSummary.pendingAmount || 0),
         itemCount: ventaPayload.lines.length,
         location,
         orderId: mpOrder?.orderId || null,
@@ -1149,7 +1314,7 @@ export default function Ventas({ location = "pv1" }) {
                 ...prev,
                 ventaId: result.ventaId,
                 chunkDocId: result.chunkDocId,
-                total: result.total,
+                total: result.mpAmount || result.total,
                 itemCount: result.itemCount,
                 location: result.location,
                 orderId: result.orderId,
@@ -1160,9 +1325,11 @@ export default function Ventas({ location = "pv1" }) {
             : prev,
         );
         setCart({});
+        resetPaymentSplitState();
       } else {
         setCart({});
         setCartOpen(false);
+        resetPaymentSplitState();
       }
     } catch (e) {
       console.error(e);
@@ -1245,11 +1412,7 @@ export default function Ventas({ location = "pv1" }) {
   const mpVentasByLocation = useMemo(() => {
     return ventasCtx
       .filter((venta) => venta?.location === location)
-      .filter(
-        (venta) =>
-          String(venta?.payment?.provider || "").toLowerCase() ===
-          "mercadopago",
-      )
+      .filter((venta) => ventaUsesMercadoPago(venta))
       .filter((venta) => !String(venta?.status || "").toLowerCase().includes("void"))
       .sort((a, b) => {
         const aStatus = getVentaMonitorStatus(a);
@@ -1375,7 +1538,7 @@ export default function Ventas({ location = "pv1" }) {
       ventaId: venta?.id,
       chunkDocId: venta?.chunkDoc,
       open: true,
-      total: venta?.totals?.total || 0,
+      total: getVentaMercadoPagoAmount(venta),
       itemCount: Array.isArray(venta?.lines) ? venta.lines.length : 0,
       location: venta?.location || location,
       orderId:
@@ -1996,28 +2159,151 @@ export default function Ventas({ location = "pv1" }) {
             <div className="p-4 overflow-y-auto flex-1 space-y-4">
               {/* Pago / Recargo / Descuento */}
               <div className="rounded-2xl border border-slate-700 p-3 bg-[#0E2330]">
-                <p className="text-xs text-white/70 mb-1.5">Medio de pago</p>
-                <select
-                  value={paymentMethod}
-                  onChange={handleChangePaymentMethod}
-                  className="w-full inp mb-2"
-                >
-                  {PAYMENT_METHODS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-[11px] text-white/55">
-                  • Usá <span className="font-semibold">Transferencia/QR</span>{" "}
-                  cuando el pago entra directo a la cuenta. <br />•{" "}
-                  <span className="font-semibold">MercadoPago</span> suele tener
-                  recargo (comisión). <br />•{" "}
-                  <span className="font-semibold">Efectivo</span> normalmente
-                  tiene algún descuento, que configurás abajo.
-                </p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-white/70">Medio de pago</p>
+                  <label className="inline-flex items-center gap-2 text-xs text-white/75">
+                    <input
+                      type="checkbox"
+                      className="accent-[#EE7203]"
+                      checked={splitPaymentsEnabled}
+                      onChange={(e) => toggleSplitPayments(e.target.checked)}
+                    />
+                    Cobro dividido / mixto
+                  </label>
+                </div>
 
-                {paymentMethod === "efectivo" && (
+                {splitPaymentsEnabled ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-xl border border-sky-400/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-50">
+                      Podés combinar <strong>efectivo</strong>,{" "}
+                      <strong>transferencia / QR</strong> y un solo tramo de{" "}
+                      <strong>MercadoPago</strong> en la misma venta. Si incluís
+                      Mercado Pago, el QR se genera solo por ese importe.
+                    </div>
+
+                    {splitHasMultipleMercadoPago && (
+                      <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-100">
+                        Mercado Pago solo puede aparecer una vez dentro del cobro mixto.
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {paymentSplits.map((split, index) => (
+                        <div
+                          key={split.id}
+                          className="grid grid-cols-[1fr_110px_auto] gap-2"
+                        >
+                          <select
+                            value={split.method}
+                            onChange={(e) =>
+                              updatePaymentSplit(split.id, {
+                                method: e.target.value,
+                              })
+                            }
+                            className="inp"
+                          >
+                            {SPLIT_PAYMENT_METHODS.map((method) => {
+                              const mercadoPagoTaken =
+                                method.id === "mercadago" &&
+                                paymentSplits.some(
+                                  (entry) =>
+                                    entry.id !== split.id &&
+                                    normalizePaymentMethod(entry.method) === "mercadago",
+                                );
+                              return (
+                                <option
+                                  key={method.id}
+                                  value={method.id}
+                                  disabled={mercadoPagoTaken}
+                                >
+                                  {method.label}
+                                </option>
+                              );
+                            })}
+                          </select>
+
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={split.amount}
+                            onChange={(e) =>
+                              updatePaymentSplit(split.id, {
+                                amount: e.target.value,
+                              })
+                            }
+                            placeholder="$ 0,00"
+                            className="inp text-right"
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() => removePaymentSplit(split.id)}
+                            disabled={paymentSplits.length <= 2}
+                            className="rounded-lg bg-white/10 px-2.5 py-2 text-xs hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={
+                              paymentSplits.length <= 2
+                                ? "El cobro dividido necesita al menos dos medios."
+                                : `Quitar medio ${index + 1}`
+                            }
+                          >
+                            Quitar
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={addPaymentSplit}
+                        className="rounded-lg bg-white/10 px-3 py-2 text-xs hover:bg-white/15"
+                      >
+                        Agregar otro medio
+                      </button>
+                      <div className="text-right text-xs">
+                        <div className="text-white/55">
+                          Asignado: {money(splitAssignedAmount)}
+                        </div>
+                        <div
+                          className={
+                            splitNeedsAdjustment ? "text-amber-300" : "text-emerald-300"
+                          }
+                        >
+                          {splitNeedsAdjustment
+                            ? splitRemainingAmount > 0
+                              ? `Faltan ${money(splitRemainingAmount)}`
+                              : `Excede por ${money(Math.abs(splitRemainingAmount))}`
+                            : "Total completo asignado"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <select
+                      value={paymentMethod}
+                      onChange={handleChangePaymentMethod}
+                      className="w-full inp mb-2 mt-2"
+                    >
+                      {PAYMENT_METHODS.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[11px] text-white/55">
+                      • Usá <span className="font-semibold">Transferencia/QR</span>{" "}
+                      cuando el pago entra directo a la cuenta. <br />•{" "}
+                      <span className="font-semibold">MercadoPago</span> suele tener
+                      recargo (comisión). <br />•{" "}
+                      <span className="font-semibold">Efectivo</span> normalmente
+                      tiene algún descuento, que configurás abajo.
+                    </p>
+                  </>
+                )}
+
+                {!splitPaymentsEnabled && paymentMethod === "efectivo" && (
                   <div className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-2">
                     <p className="text-[11px] text-emerald-50">
                       Estás cobrando en <strong>efectivo</strong>. Por costumbre
@@ -2297,6 +2583,13 @@ export default function Ventas({ location = "pv1" }) {
               <div className="grid grid-cols-1 gap-2">
                 <button
                   onClick={checkout}
+                  disabled={
+                    splitPaymentsEnabled &&
+                    (normalizedManualSplits.length < 2 ||
+                      !splitHasValidAmounts ||
+                      splitHasMultipleMercadoPago ||
+                      splitNeedsAdjustment)
+                  }
                   className="w-full px-4 py-2 rounded-xl bg-gradient-to-r from-[#EE7203] to-[#FF3816] font-medium"
                 >
                   Finalizar venta
@@ -2483,7 +2776,7 @@ function PaymentQueueRow({
 }) {
   const status = getVentaMonitorStatus(venta);
   const payment = getLatestPaymentEntry(venta);
-  const total = Number(venta?.totals?.total ?? 0);
+  const total = Number(getVentaMercadoPagoAmount(venta) || 0);
   const updatedLabel = timestampLabel(
     payment?.updatedAt || venta?.paidAt || venta?.createdAt,
   );
@@ -2704,7 +2997,9 @@ function PaymentMonitorModal({
   const status = getVentaMonitorStatus(venta || fallback);
   const meta = getPaymentMonitorMeta(status);
   const payment = getLatestPaymentEntry(venta || fallback);
-  const total = Number(venta?.totals?.total ?? fallback?.total ?? 0);
+  const total = Number(
+    getVentaMercadoPagoAmount(venta || fallback) || fallback?.total || 0,
+  );
   const itemCount = Number(venta?.lines?.length ?? fallback?.itemCount ?? 0);
   const saleLabel = venta?.id || fallback?.ventaId || "—";
   const locationLabel =
@@ -2916,13 +3211,23 @@ function getVentaMonitorStatus(venta) {
 
   if (paymentStatus === "preparing" || saleStatus === "payment_preparing")
     return "preparing";
+  if (paymentStatus === "partial_pending" || saleStatus === "partial_pending")
+    return "pending";
   if (paymentStatus === "approved" || saleStatus === "paid") return "approved";
+  if (paymentStatus === "partial_expired" || saleStatus === "partial_expired")
+    return "expired";
   if (paymentStatus === "expired" || saleStatus === "payment_expired")
     return "expired";
+  if (paymentStatus === "partial_canceled" || saleStatus === "partial_canceled")
+    return "canceled";
   if (paymentStatus === "canceled" || saleStatus === "payment_canceled")
     return "canceled";
+  if (paymentStatus === "partial_rejected" || saleStatus === "partial_rejected")
+    return "rejected";
   if (paymentStatus === "rejected" || saleStatus === "payment_rejected")
     return "rejected";
+  if (paymentStatus === "partial_error" || saleStatus === "partial_error")
+    return "error";
   if (paymentStatus === "error" || saleStatus === "payment_error")
     return "error";
   return "pending";
@@ -3007,6 +3312,192 @@ function finalPrice(p) {
 function money(n) {
   if (typeof n !== "number" || isNaN(n)) return "-";
   return n.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
+}
+function normalizePaymentMethod(method) {
+  const value = String(method || "").trim().toLowerCase();
+  return value === "mercadopago" ? "mercadago" : value;
+}
+function isMercadoPagoMethod(method) {
+  return normalizePaymentMethod(method) === "mercadago";
+}
+function buildCheckoutPaymentBreakdown({
+  splitPaymentsEnabled,
+  normalizedSplits = [],
+  paymentMethod,
+  total,
+  serverTimestamp,
+}) {
+  if (splitPaymentsEnabled) {
+    return normalizedSplits.map((split, index) => {
+      const method = normalizePaymentMethod(split?.method);
+      const isMp = isMercadoPagoMethod(method);
+      return {
+        id: split.id || `${isMp ? "mp" : "manual"}_${index + 1}`,
+        method,
+        provider: isMp ? "mercadopago" : "manual",
+        amount: Number(split.amount || 0),
+        status: isMp ? "pending" : "approved",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+    });
+  }
+
+  if (!isMercadoPagoMethod(paymentMethod)) {
+    return [
+      {
+        id: `manual_${Date.now()}`,
+        method: normalizePaymentMethod(paymentMethod),
+        provider: "manual",
+        amount: Number(total),
+        status: "approved",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+    ];
+  }
+
+  return [];
+}
+function buildCheckoutPaymentSummary({ paymentBreakdown = [], paymentMethod, total }) {
+  if (paymentBreakdown.length === 0) {
+    return {
+      method: normalizePaymentMethod(paymentMethod),
+      provider: "mercadopago",
+      status: "pending",
+      approvedAmount: 0,
+      pendingAmount: Number(total),
+      totalAmount: Number(total),
+      splitMode: "single",
+      methods: [normalizePaymentMethod(paymentMethod)].filter(Boolean),
+    };
+  }
+
+  const approvedAmount = paymentBreakdown
+    .filter((entry) => String(entry?.status || "").toLowerCase() === "approved")
+    .reduce((acc, entry) => acc + Number(entry?.amount || 0), 0);
+  const pendingAmount = paymentBreakdown
+    .filter((entry) => String(entry?.status || "").toLowerCase() === "pending")
+    .reduce((acc, entry) => acc + Number(entry?.amount || 0), 0);
+  const methods = Array.from(
+    new Set(paymentBreakdown.map((entry) => normalizePaymentMethod(entry?.method)).filter(Boolean)),
+  );
+  const hasMercadoPago = paymentBreakdown.some((entry) =>
+    isMercadoPagoMethod(entry?.method),
+  );
+  const hasManual = paymentBreakdown.some(
+    (entry) => !isMercadoPagoMethod(entry?.method),
+  );
+
+  return {
+    method: paymentBreakdown.length > 1 ? "multiple" : methods[0] || normalizePaymentMethod(paymentMethod),
+    provider: hasMercadoPago ? (hasManual ? "mixed" : "mercadopago") : "manual",
+    status: pendingAmount > 0 ? (approvedAmount > 0 ? "partial_pending" : "pending") : "approved",
+    approvedAmount: Math.round(approvedAmount * 100) / 100,
+    pendingAmount: Math.round(pendingAmount * 100) / 100,
+    totalAmount: Number(total),
+    splitMode:
+      paymentBreakdown.length > 1
+        ? hasMercadoPago
+          ? "mixed_with_mp"
+          : "manual_multiple"
+        : "single",
+    methods,
+  };
+}
+function resolveSaleStatusFromPaymentStatus(status) {
+  if (status === "approved") return "paid";
+  if (status === "partial_pending") return "partial_pending";
+  if (status === "partial_error") return "partial_error";
+  if (status === "partial_canceled") return "partial_canceled";
+  if (status === "partial_expired") return "partial_expired";
+  if (status === "partial_rejected") return "partial_rejected";
+  if (status === "error") return "payment_error";
+  if (status === "canceled") return "payment_canceled";
+  if (status === "expired") return "payment_expired";
+  if (status === "rejected") return "payment_rejected";
+  return "payment_pending";
+}
+function getVentaPaymentBreakdown(venta) {
+  return (Array.isArray(venta?.paymentBreakdown) ? venta.paymentBreakdown : []).filter(
+    (entry) => Number(entry?.amount || 0) > 0,
+  );
+}
+function ventaUsesMercadoPago(venta) {
+  const provider = String(venta?.payment?.provider || "").toLowerCase();
+  if (provider === "mercadopago" || provider === "mixed") return true;
+  return getVentaPaymentBreakdown(venta).some((entry) =>
+    isMercadoPagoMethod(entry?.method),
+  );
+}
+function getVentaMercadoPagoAmount(venta) {
+  const latestPayment = getLatestPaymentEntry(venta);
+  if (latestPayment && isMercadoPagoMethod(latestPayment?.method)) {
+    return Number(latestPayment?.amount || 0);
+  }
+
+  const breakdown = getVentaPaymentBreakdown(venta);
+  const pendingSplit =
+    breakdown.find(
+      (entry) =>
+        isMercadoPagoMethod(entry?.method) &&
+        String(entry?.status || "").toLowerCase() === "pending",
+    ) ||
+    breakdown.find((entry) => isMercadoPagoMethod(entry?.method)) ||
+    null;
+
+  if (pendingSplit) return Number(pendingSplit?.amount || 0);
+  return Number(venta?.payment?.pendingAmount || venta?.totals?.total || 0);
+}
+function buildPaymentSplitId() {
+  return `split_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function createManualPaymentSplit(method = "efectivo", amount = "") {
+  const normalizedMethod = normalizePaymentMethod(method);
+  const safeMethod = SPLIT_PAYMENT_METHODS.some(
+    (entry) => entry.id === normalizedMethod,
+  )
+    ? normalizedMethod
+    : "efectivo";
+  return {
+    id: buildPaymentSplitId(),
+    method: safeMethod,
+    amount,
+  };
+}
+function createInitialManualSplits(baseMethod = "efectivo") {
+  const normalizedMethod = normalizePaymentMethod(baseMethod);
+  const firstMethod = SPLIT_PAYMENT_METHODS.some(
+    (entry) => entry.id === normalizedMethod,
+  )
+    ? normalizedMethod
+    : "efectivo";
+  const secondMethod =
+    firstMethod === "efectivo"
+      ? "transferencia"
+      : firstMethod === "mercadago"
+        ? "efectivo"
+        : "efectivo";
+  return [
+    createManualPaymentSplit(firstMethod, ""),
+    createManualPaymentSplit(secondMethod, ""),
+  ];
+}
+function normalizeManualSplits(splits = []) {
+  return (Array.isArray(splits) ? splits : []).map((split) => ({
+    ...split,
+    method: normalizePaymentMethod(split?.method),
+    amount: parseMoneyInput(split?.amount),
+  }));
+}
+function parseMoneyInput(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(",", ".");
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(amount * 100) / 100;
 }
 function timestampLabel(ts) {
   if (!ts) return "—";

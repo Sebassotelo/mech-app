@@ -45,13 +45,12 @@ export default function HistorialVentas({ location = "pv1" }) {
     let anuladas = 0;
 
     ventasDeSede.forEach((v) => {
-      const total = Number(v?.totals?.total ?? v?.total ?? 0);
       if (isCanceled(v)) {
         anuladas += 1;
-      } else if (!isSettledSale(v)) {
+      } else if (!isSettledSaleResolved(v)) {
         return;
       } else {
-        monto += total;
+        monto += getVentaApprovedAmount(v);
         tickets += 1;
       }
     });
@@ -364,9 +363,10 @@ export default function HistorialVentas({ location = "pv1" }) {
                     v?.totals?.total ?? v?.total ?? subtotal + surcharge,
                   );
                   const method = getVentaPaymentSnapshot(v).method || v?.payment?.method || "—";
+                  const paymentBreakdown = getVentaPaymentBreakdown(v);
                   const createdMs = getCreatedMs(v);
                   const canceled = isCanceled(v);
-                  const paymentMeta = getVentaPaymentMeta(v);
+                  const paymentMeta = getVentaPaymentMetaResolved(v);
                   const idToShow = v.id || v._id || "—";
 
                   return (
@@ -400,6 +400,11 @@ export default function HistorialVentas({ location = "pv1" }) {
                       </Td>
                       <Td className="whitespace-nowrap">
                         <Badge>{labelMethod(method)}</Badge>
+                        {paymentBreakdown.length > 1 && (
+                          <span className="ml-2 text-[11px] text-white/55">
+                            {paymentBreakdown.length} medios
+                          </span>
+                        )}
                         {paymentMeta.showBadge && (
                           <span className={`ml-2 ${paymentMeta.badgeClass}`}>
                             {paymentMeta.badgeLabel}
@@ -450,9 +455,10 @@ export default function HistorialVentas({ location = "pv1" }) {
               v?.totals?.total ?? v?.total ?? subtotal + surcharge,
             );
             const method = getVentaPaymentSnapshot(v).method || v?.payment?.method || "—";
+            const paymentBreakdown = getVentaPaymentBreakdown(v);
             const createdMs = getCreatedMs(v);
             const canceled = isCanceled(v);
-            const paymentMeta = getVentaPaymentMeta(v);
+            const paymentMeta = getVentaPaymentMetaResolved(v);
 
             return (
               <button
@@ -480,6 +486,9 @@ export default function HistorialVentas({ location = "pv1" }) {
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Badge>{labelMethod(method)}</Badge>
+                      {paymentBreakdown.length > 1 && (
+                        <Badge>{paymentBreakdown.length} medios</Badge>
+                      )}
                       {paymentMeta.showBadge && (
                         <span className={paymentMeta.badgeClass}>
                           {paymentMeta.badgeLabel}
@@ -547,7 +556,8 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
   const s = venta?.payment?.surcharge || {};
   const hasSurcharge = !!s?.applied || surcharge > 0;
   const paymentSnapshot = getVentaPaymentSnapshot(venta);
-  const paymentMeta = getVentaPaymentMeta(venta);
+  const paymentMeta = getVentaPaymentMetaResolved(venta);
+  const paymentBreakdown = getVentaPaymentBreakdown(venta);
   const canceled = isCanceled(venta);
   const paymentUpdatedMs = tsToMs(paymentSnapshot.updatedAt);
   const displayMethod = paymentSnapshot.method || method || "—";
@@ -771,6 +781,29 @@ function VentaDrawer({ venta, onClose, onDeleted, isAdmin4 }) {
                 </div>
               </div>
 
+              {paymentBreakdown.length > 0 && (
+                <div className="rounded-2xl border border-white/10 p-5 space-y-3 text-sm">
+                  <h4 className="text-xs font-medium text-white/50 uppercase tracking-wider">
+                    Medios cobrados
+                  </h4>
+                  <div className="space-y-2">
+                    {paymentBreakdown.map((entry, index) => (
+                      <div
+                        key={`${entry?.id || entry?.method || "payment"}_${index}`}
+                        className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2"
+                      >
+                        <span className="text-white/80">
+                          {labelMethod(entry?.method || "—")}
+                        </span>
+                        <span className="font-medium text-white">
+                          {money(Number(entry?.amount || 0))}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Metadata Card */}
               <div className="rounded-2xl border border-white/10 p-5 space-y-3 text-sm">
                 <h4 className="text-xs font-medium text-white/50 uppercase tracking-wider mb-2">
@@ -979,7 +1012,17 @@ function labelMethod(m) {
   if (m === "efectivo") return "Efectivo";
   if (m === "transferencia") return "Transf / QR";
   if (m === "mercadago" || m === "mercadopago") return "MercadoPago";
+  if (m === "multiple") return "Pago mixto";
   return m || "—";
+}
+function getVentaPaymentBreakdown(v) {
+  return (Array.isArray(v?.paymentBreakdown) ? v.paymentBreakdown : []).filter(
+    (entry) => Number(entry?.amount || 0) > 0,
+  );
+}
+function isMercadoPagoMethod(method) {
+  const value = String(method || "").trim().toLowerCase();
+  return value === "mercadago" || value === "mercadopago";
 }
 function isCanceled(v) {
   const s = String(v?.status || v?.estado || "").toLowerCase();
@@ -997,17 +1040,54 @@ function getLatestPaymentEntry(v) {
 }
 function getVentaPaymentSnapshot(v) {
   const latest = getLatestPaymentEntry(v);
+  const breakdown = getVentaPaymentBreakdown(v);
+  const fallbackMethod =
+    breakdown.length > 1
+      ? "multiple"
+      : breakdown.length === 1
+        ? breakdown[0]?.method || ""
+        : "";
+  const fallbackProvider = breakdown.some((entry) => isMercadoPagoMethod(entry?.method))
+    ? breakdown.some((entry) => !isMercadoPagoMethod(entry?.method))
+      ? "mixed"
+      : "mercadopago"
+    : "manual";
+  const summaryProvider = String(v?.payment?.provider || "").toLowerCase();
   return {
-    provider: String(
-      latest?.provider || v?.payment?.provider || "manual",
-    ).toLowerCase(),
-    method: latest?.method || v?.payment?.method || "",
+    provider:
+      summaryProvider === "mixed"
+        ? "mixed"
+        : String(latest?.provider || summaryProvider || fallbackProvider).toLowerCase(),
+    method: latest?.method || v?.payment?.method || fallbackMethod,
     status: String(latest?.status || v?.payment?.status || "").toLowerCase(),
     orderId: latest?.orderId || v?.payment?.orderId || "",
     paymentId: latest?.paymentId || v?.payment?.paymentId || "",
     updatedAt:
       latest?.updatedAt || v?.payment?.updatedAt || v?.updatedAt || null,
   };
+}
+function getVentaApprovedAmount(v) {
+  const saleStatus = String(v?.status || "").toLowerCase();
+  if (saleStatus === "payment_error" || saleStatus === "partial_error") return 0;
+
+  const breakdown = getVentaPaymentBreakdown(v);
+  if (breakdown.length > 0) {
+    return breakdown
+      .filter((entry) => {
+        const status = String(entry?.status || "").toLowerCase();
+        return status === "approved" || status === "processed";
+      })
+      .reduce((acc, entry) => acc + Number(entry?.amount || 0), 0);
+  }
+
+  const snapshot = getVentaPaymentSnapshot(v);
+  if (snapshot.provider === "mercadopago") {
+    return snapshot.status === "approved" || saleStatus === "paid"
+      ? Number(v?.totals?.total ?? v?.total ?? 0)
+      : 0;
+  }
+
+  return Number(v?.totals?.total ?? v?.total ?? 0);
 }
 function getVentaPaymentMeta(v) {
   const snapshot = getVentaPaymentSnapshot(v);
@@ -1121,6 +1201,171 @@ function isSettledSale(v) {
   const paymentStatus = snapshot.status;
   const saleStatus = String(v?.status || "").toLowerCase();
   return paymentStatus === "approved" || saleStatus === "paid";
+}
+function getVentaPaymentMetaResolved(v) {
+  const snapshot = getVentaPaymentSnapshot(v);
+  const saleStatus = String(v?.status || v?.estado || "").toLowerCase();
+  const isMixed = snapshot.provider === "mixed";
+
+  if (isCanceled(v)) {
+    return {
+      showBadge: false,
+      badgeLabel: "Anulada",
+      detailLabel: "Venta anulada manualmente",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-[#FF3816]/20 text-[#FFB0A1] text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-[#FF3816]/30 bg-[#FF3816]/10 text-[#FFB0A1]",
+    };
+  }
+  if (snapshot.provider !== "mercadopago" && snapshot.provider !== "mixed") {
+    return {
+      showBadge: false,
+      badgeLabel: "",
+      detailLabel: "Cobro manual registrado",
+      badgeClass: "",
+      pillClass: "",
+    };
+  }
+  if (snapshot.status === "approved" || saleStatus === "paid") {
+    return {
+      showBadge: true,
+      badgeLabel: isMixed ? "Completado" : "Aprobado",
+      detailLabel: isMixed
+        ? "Venta mixta completada con el tramo de Mercado Pago aprobado"
+        : "Cobro aprobado por Mercado Pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-emerald-400/30 bg-emerald-500/15 text-emerald-100",
+    };
+  }
+  if (
+    snapshot.status === "pending" ||
+    snapshot.status === "partial_pending" ||
+    saleStatus === "payment_pending" ||
+    saleStatus === "partial_pending"
+  ) {
+    return {
+      showBadge: true,
+      badgeLabel: isMixed ? "Mixto pendiente" : "Pendiente",
+      detailLabel: isMixed
+        ? "La parte manual ya quedó registrada y falta confirmar Mercado Pago"
+        : "Esperando confirmación de Mercado Pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-sky-500/15 text-sky-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-sky-400/30 bg-sky-500/15 text-sky-100",
+    };
+  }
+  if (snapshot.status === "preparing" || saleStatus === "payment_preparing") {
+    return {
+      showBadge: true,
+      badgeLabel: "Preparando",
+      detailLabel: isMixed
+        ? "Se está generando el tramo de Mercado Pago del cobro mixto"
+        : "Cobro creado, pendiente de vincular con el QR",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-indigo-400/30 bg-indigo-500/15 text-indigo-100",
+    };
+  }
+  if (
+    snapshot.status === "canceled" ||
+    snapshot.status === "partial_canceled" ||
+    saleStatus === "payment_canceled" ||
+    saleStatus === "partial_canceled"
+  ) {
+    return {
+      showBadge: true,
+      badgeLabel: isMixed ? "Mixto cancelado" : "Cancelado",
+      detailLabel: isMixed
+        ? "La parte de Mercado Pago fue cancelada y la venta quedó incompleta"
+        : "Cobro cancelado en Mercado Pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-orange-500/15 text-orange-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-orange-400/30 bg-orange-500/15 text-orange-100",
+    };
+  }
+  if (
+    snapshot.status === "expired" ||
+    snapshot.status === "partial_expired" ||
+    saleStatus === "payment_expired" ||
+    saleStatus === "partial_expired"
+  ) {
+    return {
+      showBadge: true,
+      badgeLabel: isMixed ? "Mixto vencido" : "Vencido",
+      detailLabel: isMixed
+        ? "La parte de Mercado Pago venció y la venta quedó incompleta"
+        : "La orden venció sin pago",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-amber-500/15 text-amber-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-amber-400/30 bg-amber-500/15 text-amber-100",
+    };
+  }
+  if (
+    snapshot.status === "rejected" ||
+    snapshot.status === "partial_rejected" ||
+    saleStatus === "payment_rejected" ||
+    saleStatus === "partial_rejected"
+  ) {
+    return {
+      showBadge: true,
+      badgeLabel: isMixed ? "Mixto rechazado" : "Rechazado",
+      detailLabel: isMixed
+        ? "Mercado Pago rechazó el tramo pendiente del cobro mixto"
+        : "Mercado Pago rechazó el cobro",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-rose-500/15 text-rose-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-rose-400/30 bg-rose-500/15 text-rose-100",
+    };
+  }
+  if (
+    snapshot.status === "error" ||
+    snapshot.status === "partial_error" ||
+    saleStatus === "payment_error" ||
+    saleStatus === "partial_error"
+  ) {
+    return {
+      showBadge: true,
+      badgeLabel: isMixed ? "Mixto con error" : "Error",
+      detailLabel: isMixed
+        ? "La parte de Mercado Pago no terminó de cargarse correctamente"
+        : "La orden no terminó de cargarse correctamente",
+      badgeClass:
+        "px-2 py-0.5 rounded bg-red-500/15 text-red-100 text-[10px] uppercase font-bold tracking-wide",
+      pillClass: "border-red-400/30 bg-red-500/15 text-red-100",
+    };
+  }
+  return {
+    showBadge: true,
+    badgeLabel: "Sin estado",
+    detailLabel: "Venta sin confirmación final de cobro",
+    badgeClass:
+      "px-2 py-0.5 rounded bg-white/10 text-white/70 text-[10px] uppercase font-bold tracking-wide",
+    pillClass: "border-white/15 bg-white/5 text-white/80",
+  };
+}
+function isSettledSaleResolved(v) {
+  if (isCanceled(v)) return false;
+
+  const snapshot = getVentaPaymentSnapshot(v);
+  const saleStatus = String(v?.status || "").toLowerCase();
+  if (saleStatus === "payment_error" || saleStatus === "partial_error") return false;
+
+  if (snapshot.provider !== "mercadopago" && snapshot.provider !== "mixed") {
+    return getVentaApprovedAmount(v) > 0;
+  }
+
+  if (snapshot.status === "approved" || saleStatus === "paid") return true;
+  if (
+    snapshot.status === "partial_pending" ||
+    saleStatus === "partial_pending" ||
+    snapshot.provider === "mixed" ||
+    getVentaPaymentBreakdown(v).some((entry) => isMercadoPagoMethod(entry?.method))
+  ) {
+    return getVentaApprovedAmount(v) > 0;
+  }
+
+  return false;
 }
 function sortLabel(key) {
   if (key === "fecha") return "Fecha";

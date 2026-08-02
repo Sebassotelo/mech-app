@@ -118,6 +118,61 @@ export default function Caja({ location }) {
     const payments = Array.isArray(venta?.payments) ? venta.payments : [];
     return payments.length > 0 ? payments[payments.length - 1] : null;
   }
+  function getVentaPaymentBreakdown(venta) {
+    return (Array.isArray(venta?.paymentBreakdown) ? venta.paymentBreakdown : [])
+      .filter((entry) => Number(entry?.amount || 0) > 0);
+  }
+  function isMercadoPagoMethod(method) {
+    const value = String(method || "").trim().toLowerCase();
+    return value === "mercadago" || value === "mercadopago";
+  }
+  function labelMethod(method) {
+    if (method === "efectivo") return "Efectivo";
+    if (method === "transferencia") return "Transf / QR";
+    if (method === "mercadago" || method === "mercadopago") return "MercadoPago";
+    if (method === "multiple") return "Pago mixto";
+    return method || "—";
+  }
+  function getVentaPaymentMethodsLabel(venta) {
+    const breakdown = getVentaPaymentBreakdown(venta);
+    if (breakdown.length > 0) {
+      return breakdown.map((entry) => labelMethod(entry?.method)).join(" + ");
+    }
+    const latestPayment = getLatestPaymentEntry(venta);
+    return labelMethod(
+      latestPayment?.method || venta?.payment?.method || "manual",
+    );
+  }
+  function getVentaApprovedAmount(v) {
+    const saleStatus = String(v?.status || "").toLowerCase();
+    if (saleStatus === "payment_error" || saleStatus === "partial_error") return 0;
+
+    const breakdown = getVentaPaymentBreakdown(v);
+    if (breakdown.length > 0) {
+      return breakdown
+        .filter((entry) => {
+          const status = String(entry?.status || "").toLowerCase();
+          return status === "approved" || status === "processed";
+        })
+        .reduce((acc, entry) => acc + Number(entry?.amount || 0), 0);
+    }
+
+    const latestPayment = getLatestPaymentEntry(v);
+    const provider = String(
+      latestPayment?.provider || v?.payment?.provider || "",
+    ).toLowerCase();
+    const paymentStatus = String(
+      latestPayment?.status || v?.payment?.status || "",
+    ).toLowerCase();
+
+    if (provider === "mercadopago") {
+      return paymentStatus === "approved" || saleStatus === "paid"
+        ? Number(v?.totals?.total || 0)
+        : 0;
+    }
+
+    return Number(v?.totals?.total || 0);
+  }
 
   function isCanceledSale(v) {
     const saleStatus = String(v?.status || v?.estado || "").toLowerCase();
@@ -132,18 +187,32 @@ export default function Caja({ location }) {
 
   function isSettledSale(v) {
     if (isCanceledSale(v)) return false;
+    const saleStatus = String(v?.status || "").toLowerCase();
+    if (saleStatus === "payment_error" || saleStatus === "partial_error") return false;
 
     const latestPayment = getLatestPaymentEntry(v);
     const provider = String(
       latestPayment?.provider || v?.payment?.provider || "",
     ).toLowerCase();
-    if (provider !== "mercadopago") return true;
+    const breakdown = getVentaPaymentBreakdown(v);
+    if (provider !== "mercadopago" && provider !== "mixed") {
+      return getVentaApprovedAmount(v) > 0;
+    }
 
     const paymentStatus = String(
       latestPayment?.status || v?.payment?.status || "",
     ).toLowerCase();
-    const saleStatus = String(v?.status || "").toLowerCase();
-    return paymentStatus === "approved" || saleStatus === "paid";
+    if (paymentStatus === "approved" || saleStatus === "paid") return true;
+    if (
+      paymentStatus === "partial_pending" ||
+      saleStatus === "partial_pending" ||
+      provider === "mixed" ||
+      breakdown.some((entry) => isMercadoPagoMethod(entry?.method))
+    ) {
+      return getVentaApprovedAmount(v) > 0;
+    }
+
+    return false;
   }
 
   // ====== Normalizar movimientos: Ventas ======
@@ -160,8 +229,8 @@ export default function Caja({ location }) {
           location: v.location || "pv1",
           userEmail: (v.createdByEmail || "").toLowerCase(),
           userLabel: v.createdByEmail || "—",
-          monto: Number(v?.totals?.total || 0),
-          desc: `Venta (${(v?.lines || []).length || 0} ítems)`,
+          monto: Number(getVentaApprovedAmount(v) || 0),
+          desc: `Venta (${(v?.lines || []).length || 0} ítems) · ${getVentaPaymentMethodsLabel(v)}`,
         };
       })
       .filter((m) => m.monto > 0); // ignorar ventas sin monto

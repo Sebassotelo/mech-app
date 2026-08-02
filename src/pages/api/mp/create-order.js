@@ -1,17 +1,18 @@
-﻿import crypto from "node:crypto";
+import crypto from "node:crypto";
 import admin from "firebase-admin";
 import { adminDb } from "@/servicios/firebaseAdmin";
 import { requirePanelCaller } from "@/lib/server/mpAdmin";
+import {
+  buildExternalReference,
+  computeVentaPaymentSummary,
+  getVentaStatus,
+} from "@/lib/server/mpOrderSync";
 
 const FieldValue = admin.firestore.FieldValue;
 const Timestamp = admin.firestore.Timestamp;
 
 function toAmount(value) {
   return Number(value || 0).toFixed(2);
-}
-
-function buildExternalReference(chunkDocId, ventaKey) {
-  return `${String(chunkDocId || "").trim()}_${String(ventaKey || "").trim()}`;
 }
 
 function buildDescription(lines = []) {
@@ -37,7 +38,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { ventaKey, chunkDocId } = req.body || {};
+  const { ventaKey, chunkDocId, splitId } = req.body || {};
   if (!ventaKey || !chunkDocId) {
     return res.status(400).json({
       error: "Faltan parámetros: ventaKey, chunkDocId",
@@ -78,14 +79,28 @@ export default async function handler(req, res) {
 
   const ventaLines = Array.isArray(venta?.lines) ? venta.lines : [];
   const total = Number(venta?.totals?.total || 0);
-  if (!total || ventaLines.length === 0) {
+  const currentBreakdown = Array.isArray(venta?.paymentBreakdown)
+    ? venta.paymentBreakdown
+    : [];
+  const targetSplit = splitId
+    ? currentBreakdown.find((entry) => String(entry?.id || "") === String(splitId))
+    : null;
+  const chargeAmount = splitId ? Number(targetSplit?.amount || 0) : total;
+
+  if (splitId && !targetSplit) {
+    return res.status(404).json({
+      error: "No se encontró el tramo de Mercado Pago para esta venta",
+    });
+  }
+
+  if (!chargeAmount || ventaLines.length === 0) {
     return res.status(400).json({
       error: "La venta no tiene total o items válidos para cobrar",
     });
   }
 
-  const amount = toAmount(total);
-  const externalReference = buildExternalReference(chunkDocId, ventaKey);
+  const amount = toAmount(chargeAmount);
+  const externalReference = buildExternalReference(chunkDocId, ventaKey, splitId);
 
   const orderBody = {
     type: "qr",
@@ -135,8 +150,11 @@ export default async function handler(req, res) {
     const snap = await tx.get(ventaDocRef);
     const docData = snap.data() || {};
     const currentVenta = docData[ventaKey] || {};
-    const current = Array.isArray(currentVenta.payments)
+    const currentPayments = Array.isArray(currentVenta.payments)
       ? currentVenta.payments
+      : [];
+    const liveBreakdown = Array.isArray(currentVenta.paymentBreakdown)
+      ? currentVenta.paymentBreakdown
       : [];
 
     const pendingEntry = {
@@ -144,8 +162,11 @@ export default async function handler(req, res) {
       orderId: result?.id ? String(result.id) : null,
       status: "pending",
       statusDetail: payment?.status_detail || result?.status_detail || null,
-      amount: Number(payment?.amount || total),
+      amount: Number(payment?.amount || chargeAmount),
       currencyId: result?.currency || "ARS",
+      method: "mercadago",
+      provider: "mercadopago",
+      splitId: splitId || null,
       paymentMethodId: payment?.payment_method_id || null,
       paymentTypeId: payment?.payment_type_id || null,
       mpOrderStatus: result?.status || "created",
@@ -155,28 +176,67 @@ export default async function handler(req, res) {
       updatedAt: now,
     };
 
-    const idx = current.findIndex(
+    const existingIndex = currentPayments.findIndex(
       (entry) =>
         (pendingEntry.paymentId && entry?.paymentId === pendingEntry.paymentId) ||
         (pendingEntry.orderId && entry?.orderId === pendingEntry.orderId),
     );
 
     const updatedPayments =
-      idx >= 0
-        ? current.map((entry, entryIdx) =>
-            entryIdx === idx ? { ...entry, ...pendingEntry } : entry,
+      existingIndex >= 0
+        ? currentPayments.map((entry, entryIdx) =>
+            entryIdx === existingIndex ? { ...entry, ...pendingEntry } : entry,
           )
-        : [...current, pendingEntry];
+        : [...currentPayments, pendingEntry];
+
+    let updatedBreakdown = liveBreakdown;
+    if (splitId) {
+      updatedBreakdown = liveBreakdown.map((entry) =>
+        String(entry?.id || "") === String(splitId)
+          ? {
+              ...entry,
+              method: "mercadago",
+              provider: "mercadopago",
+              status: "pending",
+              orderId: pendingEntry.orderId,
+              paymentId: pendingEntry.paymentId,
+              paymentMethodId: pendingEntry.paymentMethodId,
+              paymentTypeId: pendingEntry.paymentTypeId,
+              statusDetail: pendingEntry.statusDetail,
+              mpOrderStatus: pendingEntry.mpOrderStatus,
+              mpPaymentStatus: pendingEntry.mpPaymentStatus,
+              updatedAt: now,
+            }
+          : entry,
+      );
+    }
+
+    const paymentSummary = computeVentaPaymentSummary({
+      ...currentVenta,
+      payments: updatedPayments,
+      paymentBreakdown: updatedBreakdown,
+    });
 
     tx.update(ventaDocRef, {
       [`${ventaKey}.payments`]: updatedPayments,
-      [`${ventaKey}.payment.status`]: "pending",
-      [`${ventaKey}.payment.orderId`]: result?.id ? String(result.id) : null,
+      [`${ventaKey}.paymentBreakdown`]: updatedBreakdown,
+      [`${ventaKey}.payment.method`]: paymentSummary.method,
+      [`${ventaKey}.payment.provider`]: paymentSummary.provider,
+      [`${ventaKey}.payment.status`]: paymentSummary.status,
+      [`${ventaKey}.payment.approvedAmount`]: paymentSummary.approvedAmount,
+      [`${ventaKey}.payment.pendingAmount`]: paymentSummary.pendingAmount,
+      [`${ventaKey}.payment.totalAmount`]: paymentSummary.totalAmount,
+      [`${ventaKey}.payment.splitMode`]: paymentSummary.splitMode,
+      [`${ventaKey}.payment.methods`]: paymentSummary.methods,
+      [`${ventaKey}.payment.orderId`]: pendingEntry.orderId,
+      [`${ventaKey}.payment.paymentId`]: pendingEntry.paymentId,
       [`${ventaKey}.payment.externalReference`]: externalReference,
-      [`${ventaKey}.payment.mpOrderStatus`]: result?.status || "created",
-      [`${ventaKey}.payment.mpPaymentStatus`]: payment?.status || "created",
+      [`${ventaKey}.payment.mpOrderStatus`]: pendingEntry.mpOrderStatus,
+      [`${ventaKey}.payment.mpPaymentStatus`]: pendingEntry.mpPaymentStatus,
+      [`${ventaKey}.payment.statusDetail`]: pendingEntry.statusDetail,
       [`${ventaKey}.payment.updatedAt`]: FieldValue.serverTimestamp(),
-      [`${ventaKey}.status`]: "payment_pending",
+      [`${ventaKey}.status`]: getVentaStatus(paymentSummary.status),
+      [`${ventaKey}.stockReservationActive`]: paymentSummary.pendingAmount > 0,
     });
   });
 
@@ -184,6 +244,6 @@ export default async function handler(req, res) {
     ok: true,
     orderId: result?.id ? String(result.id) : null,
     paymentId: payment?.id ? String(payment.id) : null,
+    amount: chargeAmount,
   });
 }
-
