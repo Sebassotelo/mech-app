@@ -145,7 +145,7 @@ export default function Caja({ location }) {
   }
   function getVentaApprovedAmount(v) {
     const saleStatus = String(v?.status || "").toLowerCase();
-    if (saleStatus === "payment_error" || saleStatus === "partial_error") return 0;
+    if (saleStatus === "payment_error") return 0;
 
     const breakdown = getVentaPaymentBreakdown(v);
     if (breakdown.length > 0) {
@@ -188,7 +188,7 @@ export default function Caja({ location }) {
   function isSettledSale(v) {
     if (isCanceledSale(v)) return false;
     const saleStatus = String(v?.status || "").toLowerCase();
-    if (saleStatus === "payment_error" || saleStatus === "partial_error") return false;
+    if (saleStatus === "payment_error") return false;
 
     const latestPayment = getLatestPaymentEntry(v);
     const provider = String(

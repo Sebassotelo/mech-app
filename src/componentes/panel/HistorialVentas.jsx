@@ -1068,7 +1068,7 @@ function getVentaPaymentSnapshot(v) {
 }
 function getVentaApprovedAmount(v) {
   const saleStatus = String(v?.status || "").toLowerCase();
-  if (saleStatus === "payment_error" || saleStatus === "partial_error") return 0;
+  if (saleStatus === "payment_error") return 0;
 
   const breakdown = getVentaPaymentBreakdown(v);
   if (breakdown.length > 0) {
@@ -1349,7 +1349,7 @@ function isSettledSaleResolved(v) {
 
   const snapshot = getVentaPaymentSnapshot(v);
   const saleStatus = String(v?.status || "").toLowerCase();
-  if (saleStatus === "payment_error" || saleStatus === "partial_error") return false;
+  if (saleStatus === "payment_error") return false;
 
   if (snapshot.provider !== "mercadopago" && snapshot.provider !== "mixed") {
     return getVentaApprovedAmount(v) > 0;

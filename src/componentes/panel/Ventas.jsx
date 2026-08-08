@@ -107,9 +107,11 @@ export default function Ventas({ location = "pv1" }) {
   const [showColsPanel, setShowColsPanel] = useState(false);
   const colsBtnRef = useRef(null);
   const colsPanelRef = useRef(null);
+  const checkoutLockRef = useRef(false);
 
   // ===== Drawer Carrito
   const [cartOpen, setCartOpen] = useState(false);
+  const [checkoutRunning, setCheckoutRunning] = useState(false);
   const [paymentMonitor, setPaymentMonitor] = useState(null);
   const [paymentQueueOpen, setPaymentQueueOpen] = useState(false);
   const [cancelingMonitorKey, setCancelingMonitorKey] = useState("");
@@ -924,6 +926,9 @@ export default function Ventas({ location = "pv1" }) {
    * Checkout → VENTA
    * ========================= */
   const checkout = async () => {
+    if (checkoutLockRef.current || checkoutRunning) {
+      return toast.message("La venta ya se está procesando.");
+    }
     if (!firestore) return toast.error("Firestore no disponible");
     const lines = Object.values(cart);
     if (lines.length === 0) return toast.error("Agregá productos al carrito");
@@ -961,7 +966,6 @@ export default function Ventas({ location = "pv1" }) {
       normalizedSplits: normalizedManualSplits,
       paymentMethod,
       total,
-      serverTimestamp,
     });
     const paymentSummary = buildCheckoutPaymentSummary({
       paymentBreakdown,
@@ -1030,13 +1034,14 @@ export default function Ventas({ location = "pv1" }) {
       } = {},
     ) => {
       const ref = doc(firestore, "ventas", chunkDocId);
+      const changedAt = new Date().toISOString();
       const updatedBreakdown = currentBreakdown.map((entry) =>
         isMercadoPagoMethod(entry?.method)
           ? {
               ...entry,
               status: "error",
               statusDetail: String(message || "").slice(0, 250),
-              updatedAt: serverTimestamp(),
+              updatedAt: changedAt,
             }
           : entry,
       );
@@ -1057,9 +1062,10 @@ export default function Ventas({ location = "pv1" }) {
             ? "mixed_with_mp"
             : "manual_multiple"
           : "single");
+      const status = approvedAmount > 0 ? "partial_error" : "error";
       const updates = {
-        [`${ventaKey}.status`]: "payment_error",
-        [`${ventaKey}.payment.status`]: approvedAmount > 0 ? "partial_error" : "error",
+        [`${ventaKey}.status`]: resolveSaleStatusFromPaymentStatus(status),
+        [`${ventaKey}.payment.status`]: status,
         [`${ventaKey}.payment.provider`]: resolvedProvider,
         [`${ventaKey}.payment.method`]:
           updatedBreakdown.length > 1
@@ -1073,10 +1079,10 @@ export default function Ventas({ location = "pv1" }) {
           .slice(0, 250),
         [`${ventaKey}.payment.updatedAt`]: serverTimestamp(),
         [`${ventaKey}.paymentBreakdown`]: updatedBreakdown,
+        [`${ventaKey}.stockReservationActive`]: false,
       };
 
       if (releaseReservation) {
-        updates[`${ventaKey}.stockReservationActive`] = false;
         updates[`${ventaKey}.stockReleasedAt`] = serverTimestamp();
       }
 
@@ -1258,10 +1264,13 @@ export default function Ventas({ location = "pv1" }) {
               : prev,
           );
         } catch (err) {
-          await updateStockByGroups(1);
-          syncStockInMemory(1);
+          const shouldRollbackStock = paymentSummary.approvedAmount <= 0;
+          if (shouldRollbackStock) {
+            await updateStockByGroups(1);
+            syncStockInMemory(1);
+          }
           await markVentaMpError(ventaSaved.docId, ventaSaved.ventaId, err?.message, {
-            releaseReservation: true,
+            releaseReservation: shouldRollbackStock,
             paymentBreakdown,
             paymentSummary,
           });
@@ -1274,6 +1283,11 @@ export default function Ventas({ location = "pv1" }) {
                 }
               : prev,
           );
+          if (paymentSummary.approvedAmount > 0) {
+            throw new Error(
+              "La venta quedó guardada como pago parcial, pero no se pudo cargar el QR de Mercado Pago.",
+            );
+          }
           throw new Error(
             "La venta quedó guardada, pero no se pudo cargar el QR de Mercado Pago.",
           );
@@ -1296,6 +1310,8 @@ export default function Ventas({ location = "pv1" }) {
       };
     };
 
+    checkoutLockRef.current = true;
+    setCheckoutRunning(true);
     try {
       const result = await toast.promise(run(), {
         loading: isMercadoPago
@@ -1333,6 +1349,9 @@ export default function Ventas({ location = "pv1" }) {
       }
     } catch (e) {
       console.error(e);
+    } finally {
+      checkoutLockRef.current = false;
+      setCheckoutRunning(false);
     }
   };
 
@@ -2584,6 +2603,7 @@ export default function Ventas({ location = "pv1" }) {
                 <button
                   onClick={checkout}
                   disabled={
+                    checkoutRunning ||
                     splitPaymentsEnabled &&
                     (normalizedManualSplits.length < 2 ||
                       !splitHasValidAmounts ||
@@ -2592,7 +2612,7 @@ export default function Ventas({ location = "pv1" }) {
                   }
                   className="w-full px-4 py-2 rounded-xl bg-gradient-to-r from-[#EE7203] to-[#FF3816] font-medium"
                 >
-                  Finalizar venta
+                  {checkoutRunning ? "Procesando venta..." : "Finalizar venta"}
                 </button>
 
                 <button
@@ -3325,8 +3345,8 @@ function buildCheckoutPaymentBreakdown({
   normalizedSplits = [],
   paymentMethod,
   total,
-  serverTimestamp,
 }) {
+  const now = new Date().toISOString();
   if (splitPaymentsEnabled) {
     return normalizedSplits.map((split, index) => {
       const method = normalizePaymentMethod(split?.method);
@@ -3337,8 +3357,8 @@ function buildCheckoutPaymentBreakdown({
         provider: isMp ? "mercadopago" : "manual",
         amount: Number(split.amount || 0),
         status: isMp ? "pending" : "approved",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: now,
+        updatedAt: now,
       };
     });
   }
@@ -3351,8 +3371,8 @@ function buildCheckoutPaymentBreakdown({
         provider: "manual",
         amount: Number(total),
         status: "approved",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        createdAt: now,
+        updatedAt: now,
       },
     ];
   }

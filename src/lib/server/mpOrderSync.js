@@ -57,6 +57,12 @@ export function getNormalizedPaymentStatus(order) {
     return "approved";
   }
 
+  if (paymentStatus === "rejected" || orderStatus === "rejected") {
+    return "rejected";
+  }
+  if (orderStatus === "failed") return "rejected";
+  if (orderStatus === "refunded") return "refunded";
+
   if (
     RELEASE_STATUSES.has(orderStatus) ||
     RELEASE_STATUSES.has(paymentStatus)
@@ -65,10 +71,6 @@ export function getNormalizedPaymentStatus(order) {
       ? "expired"
       : "canceled";
   }
-
-  if (paymentStatus === "rejected") return "rejected";
-  if (orderStatus === "failed") return "rejected";
-  if (orderStatus === "refunded") return "refunded";
 
   return "pending";
 }

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import admin from "firebase-admin";
 import { adminDb } from "@/servicios/firebaseAdmin";
 import { requirePanelCaller } from "@/lib/server/mpAdmin";
@@ -31,6 +30,32 @@ function resolveExternalPosId(locationConfig) {
   const configuredPosId = locationConfig?.pos?.externalId || null;
   if (configuredPosId) return configuredPosId;
   return process.env.MP_POS_ID || null;
+}
+
+function normalizeMethod(method) {
+  const value = String(method || "").trim().toLowerCase();
+  return value === "mercadopago" ? "mercadago" : value;
+}
+
+function isMercadoPagoMethod(method) {
+  return normalizeMethod(method) === "mercadago";
+}
+
+function normalizeStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+function isActivePaymentStatus(status) {
+  return ["created", "pending", "preparing"].includes(normalizeStatus(status));
+}
+
+function findExistingMercadoPagoPayment(payments = []) {
+  return [...payments]
+    .reverse()
+    .find((entry) => {
+      const provider = String(entry?.provider || "").toLowerCase();
+      return provider === "mercadopago" || isMercadoPagoMethod(entry?.method);
+    });
 }
 
 export default async function handler(req, res) {
@@ -87,10 +112,63 @@ export default async function handler(req, res) {
     : null;
   const chargeAmount = splitId ? Number(targetSplit?.amount || 0) : total;
 
-  if (splitId && !targetSplit) {
-    return res.status(404).json({
-      error: "No se encontró el tramo de Mercado Pago para esta venta",
-    });
+  if (splitId) {
+    if (!targetSplit) {
+      return res.status(404).json({
+        error: "No se encontró el tramo de Mercado Pago para esta venta",
+      });
+    }
+
+    if (!isMercadoPagoMethod(targetSplit?.method)) {
+      return res.status(400).json({
+        error: "El tramo seleccionado no corresponde a Mercado Pago",
+      });
+    }
+
+    if (!isActivePaymentStatus(targetSplit?.status)) {
+      return res.status(409).json({
+        error: "El tramo de Mercado Pago no está pendiente de cobro",
+      });
+    }
+
+    if (targetSplit?.orderId) {
+      return res.status(200).json({
+        ok: true,
+        reused: true,
+        orderId: String(targetSplit.orderId),
+        paymentId: targetSplit?.paymentId ? String(targetSplit.paymentId) : null,
+        amount: chargeAmount,
+      });
+    }
+  } else {
+    const existingPayment =
+      findExistingMercadoPagoPayment(venta?.payments || []) ||
+      (venta?.payment?.orderId &&
+      (String(venta?.payment?.provider || "").toLowerCase() === "mercadopago" ||
+        isMercadoPagoMethod(venta?.payment?.method))
+        ? venta.payment
+        : null);
+    const existingStatus = normalizeStatus(
+      existingPayment?.status || venta?.payment?.status,
+    );
+
+    if (existingPayment?.orderId && isActivePaymentStatus(existingStatus)) {
+      return res.status(200).json({
+        ok: true,
+        reused: true,
+        orderId: String(existingPayment.orderId),
+        paymentId: existingPayment?.paymentId
+          ? String(existingPayment.paymentId)
+          : null,
+        amount: Number(existingPayment?.amount || total),
+      });
+    }
+
+    if (existingPayment?.orderId && existingStatus === "approved") {
+      return res.status(409).json({
+        error: "La venta ya tiene un pago de Mercado Pago aprobado",
+      });
+    }
   }
 
   if (!chargeAmount || ventaLines.length === 0) {
@@ -131,7 +209,7 @@ export default async function handler(req, res) {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      "X-Idempotency-Key": crypto.randomUUID(),
+      "X-Idempotency-Key": `create-order-${externalReference}`,
     },
     body: JSON.stringify(orderBody),
   });
